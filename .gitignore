@@ -1,0 +1,10 @@
+# Android Studio and Gradle generated files
+.idea/
+.gradle/
+**/build/
+local.properties
+**/local.properties
+*.iml
+
+# OS/editor files
+.DS_Store
