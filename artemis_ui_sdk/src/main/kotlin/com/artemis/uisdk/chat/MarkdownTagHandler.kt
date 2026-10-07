@@ -19,21 +19,21 @@ internal class MarkdownTagHandler(
 ) : Html.TagHandler {
     private val density = context.resources.displayMetrics.density
     private val codeSurface = context.getColor(com.artemis.uisdk.R.color.artemis_surface)
-    private val starts = mutableMapOf<String, ArrayDeque<Int>>()
+    private val tagStartIndices = mutableMapOf<String, ArrayDeque<Int>>()
 
     override fun handleTag(opening: Boolean, tag: String, output: Editable, xmlReader: XMLReader?) {
-        val name = tag.lowercase()
-        if (name !in supportedTags) return
+        val tagName = tag.lowercase()
+        if (tagName !in supportedTags) return
         if (opening) {
-            starts.getOrPut(name) { ArrayDeque() }.addLast(output.length)
+            tagStartIndices.getOrPut(tagName) { ArrayDeque() }.addLast(output.length)
             return
         }
-        val stack = starts[name] ?: return
-        if (stack.isEmpty()) return
-        val start = stack.removeLast()
-        val end = output.length
-        if (start >= end) return
-        val spans: List<Any> = when (name) {
+        val startIndices = tagStartIndices[tagName] ?: return
+        if (startIndices.isEmpty()) return
+        val spanStartIndex = startIndices.removeLast()
+        val spanEndIndex = output.length
+        if (spanStartIndex >= spanEndIndex) return
+        val styleSpans: List<Any> = when (tagName) {
             "artemis-code", "artemis-code-block" -> listOf(
                 BackgroundColorSpan(codeSurface),
                 TypefaceSpan("monospace"),
@@ -42,8 +42,8 @@ internal class MarkdownTagHandler(
             "artemis-blockquote" -> listOf(StyleSpan(Typeface.ITALIC))
             "artemis-list-item" -> emptyList()
             else -> {
-                val level = name.removePrefix("artemis-h").toIntOrNull() ?: return
-                val scale = when (level) {
+                val headingLevel = tagName.removePrefix("artemis-h").toIntOrNull() ?: return
+                val headingScale = when (headingLevel) {
                     1 -> 1.25f
                     2 -> 1.125f
                     3 -> 1f
@@ -51,10 +51,12 @@ internal class MarkdownTagHandler(
                     5 -> .875f
                     else -> .8125f
                 }
-                listOf(RelativeSizeSpan(scale), StyleSpan(Typeface.BOLD))
+                listOf(RelativeSizeSpan(headingScale), StyleSpan(Typeface.BOLD))
             }
         }
-        spans.forEach { output.setSpan(it, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
+        styleSpans.forEach { styleSpan ->
+            output.setSpan(styleSpan, spanStartIndex, spanEndIndex, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
     }
 
     private companion object {

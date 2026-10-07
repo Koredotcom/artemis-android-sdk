@@ -12,13 +12,13 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 /** Entry point for initializing the embedded Artemis chat experience. */
 object ArtemisUI {
-    private val handles = ConcurrentHashMap<String, ArtemisUiHandle>()
+    private val activeUiHandles = ConcurrentHashMap<String, ArtemisUiHandle>()
 
     @JvmStatic
     fun initialize(context: Context, config: ArtemisUIConfig): ArtemisUiHandle {
-        val handle = ArtemisUiHandle(context.applicationContext, config)
-        handles[handle.id] = handle
-        return handle
+        val initializedUiHandle = ArtemisUiHandle(context.applicationContext, config)
+        activeUiHandles[initializedUiHandle.handleIdentifier] = initializedUiHandle
+        return initializedUiHandle
     }
 
     /** Load configuration from a host-owned asset before initializing. */
@@ -29,8 +29,10 @@ object ArtemisUI {
         environment: String? = null,
     ): ArtemisUiHandle = initialize(context, ArtemisConfigLoader.load(context, assetPath, environment))
 
-    internal fun resolve(id: String): ArtemisUiHandle? = handles[id]
-    internal fun remove(handle: ArtemisUiHandle) { handles.remove(handle.id, handle) }
+    internal fun resolveHandle(handleIdentifier: String): ArtemisUiHandle? = activeUiHandles[handleIdentifier]
+    internal fun unregisterHandle(uiHandle: ArtemisUiHandle) {
+        activeUiHandles.remove(uiHandle.handleIdentifier, uiHandle)
+    }
 }
 
 /** Application-scoped configuration handle. A single chat may be active per handle. */
@@ -38,65 +40,65 @@ class ArtemisUiHandle internal constructor(
     internal val appContext: Context,
     val config: ArtemisUIConfig,
 ) : AutoCloseable {
-    internal val id: String = UUID.randomUUID().toString()
-    private val listeners = CopyOnWriteArrayList<ArtemisUiListener>()
-    @Volatile internal var chatOpen = false
-    @Volatile private var closed = false
-    @Volatile internal var shutdownSession: ((String) -> Unit)? = null
+    internal val handleIdentifier: String = UUID.randomUUID().toString()
+    private val eventListeners = CopyOnWriteArrayList<ArtemisUiListener>()
+    @Volatile internal var isChatOpen = false
+    @Volatile private var isClosed = false
+    @Volatile internal var chatSessionShutdownCallback: ((String) -> Unit)? = null
 
     fun showChat(activity: FragmentActivity, options: ChatOptions = ChatOptions()) {
         checkAvailable()
-        check(!chatOpen) { "A chat session is already open for this handle" }
-        chatOpen = true
+        check(!isChatOpen) { "A chat session is already open for this handle" }
+        isChatOpen = true
         try {
             activity.startActivity(Intent(activity, ArtemisChatActivity::class.java).apply {
-                putExtra(ArtemisChatActivity.EXTRA_HANDLE_ID, id)
+                putExtra(ArtemisChatActivity.EXTRA_HANDLE_IDENTIFIER, handleIdentifier)
                 putExtra(ArtemisChatActivity.EXTRA_TITLE, options.title)
             })
         } catch (error: RuntimeException) {
-            chatOpen = false
+            isChatOpen = false
             throw error
         }
     }
 
     fun createChatFragment(options: ChatOptions = ChatOptions()): Fragment {
         checkAvailable()
-        check(!chatOpen) { "A chat session is already open for this handle" }
-        chatOpen = true
-        return ArtemisChatFragment.create(id, options.title)
+        check(!isChatOpen) { "A chat session is already open for this handle" }
+        isChatOpen = true
+        return ArtemisChatFragment.create(handleIdentifier, options.title)
     }
 
     fun addListener(listener: ArtemisUiListener): AutoCloseable {
         checkAvailable()
-        listeners.add(listener)
-        return AutoCloseable { listeners.remove(listener) }
+        eventListeners.add(listener)
+        return AutoCloseable { eventListeners.remove(listener) }
     }
 
     internal fun emit(event: ArtemisUiEvent) {
-        listeners.forEach { listener -> runCatching { listener.onEvent(event) } }
+        eventListeners.forEach { listener -> runCatching { listener.onEvent(event) } }
     }
 
     internal fun finishChat(reason: String) {
-        chatOpen = false
-        shutdownSession = null
+        isChatOpen = false
+        chatSessionShutdownCallback = null
         emit(ArtemisUiEvent.Closed(reason))
     }
 
-    private fun checkAvailable() { check(!closed) { "Artemis UI handle is closed" } }
-    internal fun isClosed() = closed
+    private fun checkAvailable() { check(!isClosed) { "Artemis UI handle is closed" } }
+    internal fun isClosed() = isClosed
 
     override fun close() {
-        if (closed) return
-        val shutdown = shutdownSession
-        if (shutdown != null) shutdown("HANDLE_CLOSED")
+        if (isClosed) return
+        val shutdownChatSession = chatSessionShutdownCallback
+        if (shutdownChatSession != null) shutdownChatSession("HANDLE_CLOSED")
         else {
-            chatOpen = false
+            isChatOpen = false
             emit(ArtemisUiEvent.Closed("HANDLE_CLOSED"))
         }
-        closed = true
-        shutdownSession = null
-        listeners.clear()
-        ArtemisUI.remove(this)
+        isClosed = true
+        chatSessionShutdownCallback = null
+        eventListeners.clear()
+        ArtemisUI.unregisterHandle(this)
     }
 }
 

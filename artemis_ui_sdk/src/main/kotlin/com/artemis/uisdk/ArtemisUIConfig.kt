@@ -74,90 +74,90 @@ object ArtemisConfigLoader {
         require(environment == null || environment.matches(Regex("[A-Za-z0-9_-]+"))) {
             "environment may contain only letters, digits, underscore, and dash"
         }
-        val base = readAsset(context, assetPath)
-        val merged = if (environment == null) base else {
-            val dot = assetPath.lastIndexOf('.')
-            val overridePath = if (dot < 0) "$assetPath.$environment.yaml"
-            else assetPath.substring(0, dot) + ".$environment" + assetPath.substring(dot)
-            val override = try {
-                readAsset(context, overridePath)
+        val baseConfiguration = readAsset(context, assetPath)
+        val mergedConfiguration = if (environment == null) baseConfiguration else {
+            val extensionSeparatorIndex = assetPath.lastIndexOf('.')
+            val environmentOverridePath = if (extensionSeparatorIndex < 0) "$assetPath.$environment.yaml"
+            else assetPath.substring(0, extensionSeparatorIndex) + ".$environment" + assetPath.substring(extensionSeparatorIndex)
+            val environmentOverride = try {
+                readAsset(context, environmentOverridePath)
             } catch (_: FileNotFoundException) {
                 null
             }
-            if (override == null) base else deepMerge(base, override)
+            if (environmentOverride == null) baseConfiguration else deepMerge(baseConfiguration, environmentOverride)
         }
         @Suppress("UNCHECKED_CAST")
-        val root = (merged["artemis_ui_sdk"] ?: merged["artemis_ui_plugin"]) as? Map<String, Any?>
+        val configurationRoot = (mergedConfiguration["artemis_ui_sdk"] ?: mergedConfiguration["artemis_ui_plugin"]) as? Map<String, Any?>
             ?: error("Missing artemis_ui_sdk configuration object")
-        return fromMap(root)
+        return fromMap(configurationRoot)
     }
 
-    fun fromMap(root: Map<String, Any?>): ArtemisUIConfig {
-        val connection = root.map("connection")
-        val channel = root.map("channel")
-        val reconnection = root.map("websocket").map("reconnection")
-        val features = root.map("features")
-        val chat = root.map("chat")
-        val theme = root.map("theme")
-        val apiKey = connection.string("api_key")
-        require(connection.string("bootstrap_token").isNullOrBlank()) {
+    fun fromMap(configurationRoot: Map<String, Any?>): ArtemisUIConfig {
+        val connection = configurationRoot.nestedMap("connection")
+        val channel = configurationRoot.nestedMap("channel")
+        val reconnection = configurationRoot.nestedMap("websocket").nestedMap("reconnection")
+        val features = configurationRoot.nestedMap("features")
+        val chat = configurationRoot.nestedMap("chat")
+        val theme = configurationRoot.nestedMap("theme")
+        val apiKey = connection.readString("api_key")
+        require(connection.readString("bootstrap_token").isNullOrBlank()) {
             "bootstrap_token is not supported by the configured Android Socket SDK"
         }
         return ArtemisUIConfig(
             connection = ArtemisConnectionConfig(
-                endpoint = connection.string("endpoint").orEmpty(),
-                projectId = connection.string("project_id").orEmpty(),
+                endpoint = connection.readString("endpoint").orEmpty(),
+                projectId = connection.readString("project_id").orEmpty(),
                 apiKey = apiKey.orEmpty(),
-                channelId = channel.string("channel_id") ?: connection.string("channel_id"),
-                channelName = channel.string("channel_name") ?: connection.string("channel_name"),
+                channelId = channel.readString("channel_id") ?: connection.readString("channel_id"),
+                channelName = channel.readString("channel_name") ?: connection.readString("channel_name"),
             ),
             reconnection = ArtemisReconnectionConfig(
-                enabled = reconnection.bool("enabled", true),
-                maxAttempts = reconnection.int("max_attempts", 5),
-                baseDelayMs = reconnection.long("base_delay_ms", 1_000),
-                maxDelayMs = reconnection.long("max_delay_ms", 30_000),
+                enabled = reconnection.readBoolean("enabled", true),
+                maxAttempts = reconnection.readInteger("max_attempts", 5),
+                baseDelayMs = reconnection.readLong("base_delay_ms", 1_000),
+                maxDelayMs = reconnection.readLong("max_delay_ms", 30_000),
             ),
             features = ArtemisFeatureConfig(
-                markdown = features.bool("enable_markdown", true),
-                carousel = features.bool("enable_carousel", true),
-                typingIndicator = chat.bool("enable_typing_indicator", true),
-                timestamps = root.bool("timestamps", true),
+                markdown = features.readBoolean("enable_markdown", true),
+                carousel = features.readBoolean("enable_carousel", true),
+                typingIndicator = chat.readBoolean("enable_typing_indicator", true),
+                timestamps = configurationRoot.readBoolean("timestamps", true),
             ),
             theme = ArtemisThemeConfig(
-                mode = if (theme.bool("dark_mode", false)) "dark" else theme.string("mode") ?: "system",
-                primary = theme.string("primary_color") ?: "#2563EB",
-                background = theme.string("background_color"),
-                userBubble = theme.string("user_bubble_color"),
-                assistantBubble = theme.string("assistant_bubble_color"),
-                bubbleRadiusDp = theme.float("border_radius", 16f),
+                mode = if (theme.readBoolean("dark_mode", false)) "dark" else theme.readString("mode") ?: "system",
+                primary = theme.readString("primary_color") ?: "#2563EB",
+                background = theme.readString("background_color"),
+                userBubble = theme.readString("user_bubble_color"),
+                assistantBubble = theme.readString("assistant_bubble_color"),
+                bubbleRadiusDp = theme.readFloat("border_radius", 16f),
             ),
         )
     }
 
-    private fun readAsset(context: Context, path: String): Map<String, Any?> = context.assets.open(path).use { input ->
-        require(input.available() <= 1_048_576) { "Configuration asset exceeds 1 MiB" }
+    private fun readAsset(context: Context, path: String): Map<String, Any?> = context.assets.open(path).use { configInputStream ->
+        require(configInputStream.available() <= 1_048_576) { "Configuration asset exceeds 1 MiB" }
         @Suppress("UNCHECKED_CAST")
-        ((Yaml(SafeConstructor(LoaderOptions())).load<Any?>(input) as? Map<String, Any?>)
+        ((Yaml(SafeConstructor(LoaderOptions())).load<Any?>(configInputStream) as? Map<String, Any?>)
             ?: error("Configuration asset must contain a YAML object"))
     }
 
-    private fun deepMerge(base: Map<String, Any?>, override: Map<String, Any?>): Map<String, Any?> {
-        val result = base.toMutableMap()
-        for ((key, value) in override) {
-            val previous = result[key]
-            result[key] = if (previous is Map<*, *> && value is Map<*, *>) {
+    private fun deepMerge(baseConfiguration: Map<String, Any?>, environmentOverride: Map<String, Any?>): Map<String, Any?> {
+        val mergedConfiguration = baseConfiguration.toMutableMap()
+        for ((key, value) in environmentOverride) {
+            val existingValue = mergedConfiguration[key]
+            mergedConfiguration[key] = if (existingValue is Map<*, *> && value is Map<*, *>) {
                 @Suppress("UNCHECKED_CAST")
-                deepMerge(previous as Map<String, Any?>, value as Map<String, Any?>)
+                deepMerge(existingValue as Map<String, Any?>, value as Map<String, Any?>)
             } else value
         }
-        return result
+        return mergedConfiguration
     }
 
-    private fun Map<String, Any?>.map(key: String): Map<String, Any?> =
+    private fun Map<String, Any?>.nestedMap(key: String): Map<String, Any?> =
         (this[key] as? Map<*, *>)?.entries?.associate { it.key.toString() to it.value } ?: emptyMap()
-    private fun Map<String, Any?>.string(key: String) = this[key] as? String
-    private fun Map<String, Any?>.bool(key: String, default: Boolean) = this[key] as? Boolean ?: default
-    private fun Map<String, Any?>.int(key: String, default: Int) = (this[key] as? Number)?.toInt() ?: default
-    private fun Map<String, Any?>.long(key: String, default: Long) = (this[key] as? Number)?.toLong() ?: default
-    private fun Map<String, Any?>.float(key: String, default: Float) = (this[key] as? Number)?.toFloat() ?: default
+    private fun Map<String, Any?>.readString(key: String) = this[key] as? String
+    private fun Map<String, Any?>.readBoolean(key: String, default: Boolean) = this[key] as? Boolean ?: default
+    private fun Map<String, Any?>.readInteger(key: String, default: Int) = (this[key] as? Number)?.toInt() ?: default
+    private fun Map<String, Any?>.readLong(key: String, default: Long) = (this[key] as? Number)?.toLong() ?: default
+    private fun Map<String, Any?>.readFloat(key: String, default: Float) = (this[key] as? Number)?.toFloat() ?: default
 }

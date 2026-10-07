@@ -6,23 +6,16 @@ import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.media.MediaPlayer
-import android.net.Uri
 import android.text.Html
-import android.text.Editable
 import android.text.Spanned
-import android.text.style.BackgroundColorSpan
-import android.text.style.LeadingMarginSpan
-import android.text.style.QuoteSpan
-import android.text.style.RelativeSizeSpan
-import android.text.style.StyleSpan
-import android.text.style.TypefaceSpan
 import android.text.method.LinkMovementMethod
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.HorizontalScrollView
@@ -30,17 +23,19 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.Spinner
-import android.widget.ArrayAdapter
 import android.widget.TextView
 import android.widget.VideoView
+import androidx.core.net.toUri
+import androidx.core.view.isNotEmpty
 import androidx.core.view.setPadding
 import com.artemis.uisdk.ArtemisFeatureConfig
 import com.artemis.uisdk.ArtemisThemeConfig
+import com.artemis.uisdk.R
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
-import java.net.URL
 import java.net.URI
+import java.net.URL
 import java.util.concurrent.Executors
 
 /** Built-in rich-content rendering. Layouts live in res/layout/artemis_template_*.xml. */
@@ -49,394 +44,525 @@ internal class DefaultRichTemplateRenderer(
     private val theme: ArtemisThemeConfig,
     private val callbacks: ChatMessageAdapter.Callbacks,
 ) {
-    fun renderRich(c: Context, holder: ChatMessageAdapter.Holder, message: ChatMessage, parent: LinearLayout, rich: JsonObject) {
-        val order = com.artemis.uisdk.templates.ArtemisDefaultTemplates.types
-        for (key in order) {
-            val value = rich.get(key) ?: continue
-            if (key == "markdown" && value.isJsonPrimitive && value.asString.trim() == message.text.trim()) continue
-            val title = key.replace('_', ' ').replaceFirstChar { it.uppercase() }
-            val target = if (key == "markdown" || key == "quick_replies") parent else
-                (android.view.LayoutInflater.from(c).inflate(com.artemis.uisdk.R.layout.artemis_template_card, parent, false) as LinearLayout)
+    private data class ChartPoint(val label: String, val value: Double, val color: String?)
+
+    fun renderRich(context: Context, messageViewHolder: ChatMessageAdapter.ChatMessageViewHolder, message: ChatMessage, parent: LinearLayout, richContentObject: JsonObject) {
+        val templateRenderOrder = com.artemis.uisdk.templates.ArtemisDefaultTemplates.types
+        for (templateType in templateRenderOrder) {
+            val templatePayload = richContentObject.get(templateType) ?: continue
+            if (templateType == "markdown" && templatePayload.isJsonPrimitive && templatePayload.asString.trim() == message.text.trim()) continue
+            val templateTitle = templateType.replace('_', ' ').replaceFirstChar { it.uppercase() }
+            val templateContainer = if (templateType == "markdown" || templateType == "quick_replies") parent else
+                (android.view.LayoutInflater.from(context).inflate(R.layout.artemis_template_card, parent, false) as LinearLayout)
             runCatching {
-                when (key) {
-                    "markdown" -> addText(c, target, parseMarkdown(c, value.asString))
-                    "carousel" -> carousel(c, message, target, value.asJsonObject)
-                    "image" -> image(c, target, value.asJsonObject)
-                    "html" -> html(c, target, value.asString)
-                    "video" -> video(c, target, value.asJsonObject)
-                    "audio" -> audio(c, holder, target, value.asJsonObject)
-                    "file" -> file(c, target, value.asJsonObject)
-                    "list" -> list(c, target, value.asJsonObject)
-                    "kpi" -> kpi(c, target, value.asJsonObject)
-                    "table" -> table(c, target, value.asJsonObject)
-                    "chart" -> chart(c, target, value.asJsonObject)
-                    "form" -> form(c, message, target, value.asJsonObject)
-                    "progress" -> progress(c, target, value.asJsonObject)
-                    "feedback" -> feedback(c, message, target, value.asJsonObject)
-                    "quick_replies" -> quickReplies(c, message, target, value.asJsonArray)
-                    else -> fallback(c, target, title, value)
+                when (templateType) {
+                    "markdown" -> addText(context, templateContainer, parseMarkdown(context, templatePayload.asString))
+                    "carousel" -> carousel(context, message, templateContainer, templatePayload.asJsonObject)
+                    "image" -> image(context, templateContainer, templatePayload.asJsonObject)
+                    "html" -> html(context, templateContainer, templatePayload.asString)
+                    "video" -> video(context, templateContainer, templatePayload.asJsonObject)
+                    "audio" -> audio(context, messageViewHolder, templateContainer, templatePayload.asJsonObject)
+                    "file" -> file(context, templateContainer, templatePayload.asJsonObject)
+                    "list" -> renderList(context, templateContainer, templatePayload.asJsonObject)
+                    "kpi" -> kpi(context, templateContainer, templatePayload.asJsonObject)
+                    "table" -> table(context, templateContainer, templatePayload.asJsonObject)
+                    "chart" -> chart(context, templateContainer, templatePayload.asJsonObject)
+                    "form" -> form(context, message, templateContainer, templatePayload.asJsonObject)
+                    "progress" -> progress(context, templateContainer, templatePayload.asJsonObject)
+                    "feedback" -> feedback(context, message, templateContainer, templatePayload.asJsonObject)
+                    "quick_replies" -> quickReplies(context, message, templateContainer, templatePayload.asJsonArray)
+                    else -> fallback(context, templateContainer, templateTitle, templatePayload)
                 }
-            }.onFailure { target.removeAllViews(); addText(c, target, "$title is unavailable") }
-            if (target !== parent && target.childCount > 0) parent.addView(target)
+            }.onFailure {
+                templateContainer.removeAllViews()
+                addText(context, templateContainer, "$templateTitle is unavailable")
+            }
+            if (templateContainer !== parent && templateContainer.isNotEmpty()) parent.addView(templateContainer)
         }
     }
 
-    fun renderActions(c: Context, message: ChatMessage, parent: LinearLayout, actions: JsonObject) {
-        val elements = actions.getAsJsonArray("elements") ?: return
-        val renderId = actions.str("renderId")
-        val form = LinkedHashMap<String, String>()
+    fun renderActions(context: Context, message: ChatMessage, parent: LinearLayout, actions: JsonObject) {
+        val actionElements = actions.getAsJsonArray("elements") ?: return
+        val renderIdentifier = actions.readString("renderId")
+        val formValues = LinkedHashMap<String, String>()
         val pendingInputs = mutableListOf<Pair<JsonObject, EditText>>()
         val pendingSelects = mutableListOf<Pair<JsonObject, Spinner>>()
-        for (element in elements.objects()) {
-            val id = element.str("id") ?: continue
-            val label = element.str("label") ?: continue
-            when (element.str("type") ?: "button") {
-                "button" -> actionButton(c, message, parent, id, label, element.str("value") ?: element.str("payload") ?: element.str("url") ?: id, renderId)
+        for (actionElement in actionElements.objects()) {
+            val actionIdentifier = actionElement.readString("id") ?: continue
+            val actionLabel = actionElement.readString("label") ?: continue
+            when (actionElement.readString("type") ?: "button") {
+                "button" -> actionButton(context, message, parent, actionIdentifier, actionLabel,
+                    actionElement.readString("value") ?: actionElement.readString("payload") ?: actionElement.readString("url") ?: actionIdentifier,
+                    renderIdentifier)
                 "input" -> {
-                    val edit = (android.view.LayoutInflater.from(c).inflate(com.artemis.uisdk.R.layout.artemis_template_field, parent, false) as EditText).apply { hint = element.str("placeholder") ?: label; setSingleLine(); setText(element.str("value")) }
-                    parent.addView(edit, matchWrap(c))
-                    if (actions.str("submit_id")?.isNotBlank() == true) pendingInputs.add(element to edit)
-                    else edit.setOnEditorActionListener { _, _, _ ->
-                        val value = edit.text.toString().trim()
-                        if (value.isNotEmpty() || !element.bool("required")) callbacks.onAction(message, id, value, null, renderId)
+                    val messageInput = (android.view.LayoutInflater.from(context).inflate(R.layout.artemis_template_field, parent, false) as EditText).apply {
+                        hint = actionElement.readString("placeholder") ?: actionLabel
+                        setSingleLine()
+                        setText(actionElement.readString("value"))
+                    }
+                    parent.addView(messageInput, createMatchParentWrapContentLayoutParams(context))
+                    if (actions.readString("submit_id")?.isNotBlank() == true) pendingInputs.add(actionElement to messageInput)
+                    else messageInput.setOnEditorActionListener { _, _, _ ->
+                        val enteredActionValue = messageInput.text.toString().trim()
+                        if (enteredActionValue.isNotEmpty() || !actionElement.readBoolean("required")) {
+                            callbacks.onAction(message, actionIdentifier, enteredActionValue, null, renderIdentifier)
+                        }
                         true
                     }
                 }
                 "select" -> {
-                    val options = element.array("options").objects().toList()
-                    val spinner = Spinner(c).apply {
-                        adapter = ArrayAdapter(c, android.R.layout.simple_spinner_dropdown_item, options.map { it.str("label") ?: it.str("id").orEmpty() })
+                    val selectionOptions = actionElement.readArray("options").objects().toList()
+                    val selectionSpinner = Spinner(context).apply {
+                        adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, selectionOptions.map { option ->
+                            option.readString("label") ?: option.readString("id").orEmpty()
+                        })
                     }
-                    parent.addView(spinner, matchWrap(c))
-                    if (actions.str("submit_id")?.isNotBlank() == true) pendingSelects.add(element to spinner)
-                    else spinner.onItemSelectedListener = SimpleSelectionListener { index -> options.getOrNull(index)?.str("id")?.let { callbacks.onAction(message, id, it, null, renderId) } }
+                    parent.addView(selectionSpinner, createMatchParentWrapContentLayoutParams(context))
+                    if (actions.readString("submit_id")?.isNotBlank() == true) pendingSelects.add(actionElement to selectionSpinner)
+                    else selectionSpinner.onItemSelectedListener = SimpleSelectionListener { selectedIndex ->
+                        selectionOptions.getOrNull(selectedIndex)?.readString("id")?.let { selectedOptionId ->
+                            callbacks.onAction(message, actionIdentifier, selectedOptionId, null, renderIdentifier)
+                        }
+                    }
                 }
             }
         }
-        val submitId = actions.str("submit_id")
-        if (!submitId.isNullOrBlank()) {
-            val label = actions.str("submit_label") ?: "Submit"
-            actionButton(c, message, parent, submitId, label, null, renderId) {
-                pendingInputs.forEach { (field, edit) ->
-                    val id = field.str("id") ?: return@forEach
-                    val value = edit.text.toString().trim()
-                    if (field.bool("required") && value.isEmpty()) { edit.error = "Required"; return@actionButton }
-                    form[id] = value
+        val submitActionIdentifier = actions.readString("submit_id")
+        if (!submitActionIdentifier.isNullOrBlank()) {
+            val submitButtonLabel = actions.readString("submit_label") ?: "Submit"
+            actionButton(context, message, parent, submitActionIdentifier, submitButtonLabel, null, renderIdentifier) {
+                pendingInputs.forEach { (formField, formInput) ->
+                    val formFieldIdentifier = formField.readString("id") ?: return@forEach
+                    val enteredFieldValue = formInput.text.toString().trim()
+                    if (formField.readBoolean("required") && enteredFieldValue.isEmpty()) {
+                        formInput.error = "Required"
+                        return@actionButton
+                    }
+                    formValues[formFieldIdentifier] = enteredFieldValue
                 }
-                pendingSelects.forEach { (field, spinner) ->
-                    val opts = field.array("options").objects().toList()
-                    val id = field.str("id") ?: return@forEach
-                    form[id] = opts.getOrNull(spinner.selectedItemPosition)?.str("id").orEmpty()
+                pendingSelects.forEach { (formField, selectionSpinner) ->
+                    val selectionOptions = formField.readArray("options").objects().toList()
+                    val formFieldIdentifier = formField.readString("id") ?: return@forEach
+                    formValues[formFieldIdentifier] = selectionOptions.getOrNull(selectionSpinner.selectedItemPosition)
+                        ?.readString("id").orEmpty()
                 }
-                callbacks.onAction(message, submitId, gsonEncode(form), form, renderId)
+                callbacks.onAction(message, submitActionIdentifier, encodeFormValues(formValues), formValues, renderIdentifier)
             }
         }
     }
 
-    private fun actionButton(c: Context, message: ChatMessage, parent: LinearLayout, id: String,
-                             label: String, value: String?, renderId: String?, onClick: (() -> Unit)? = null) {
-        val button = templateButton(c, parent).apply { text = label; isEnabled = !callbacks.isLocked(message, id) }
-        button.setOnClickListener { if (onClick != null) onClick() else { button.isEnabled = false; callbacks.onAction(message, id, value, null, renderId) } }
-        parent.addView(button, matchWrap(c))
+    private fun actionButton(context: Context, message: ChatMessage, parent: LinearLayout, actionIdentifier: String,
+                             actionLabel: String, actionValue: String?, renderIdentifier: String?, onClick: (() -> Unit)? = null) {
+        val actionButtonView = templateButton(context, parent).apply {
+            text = actionLabel
+            isEnabled = !callbacks.isLocked(message, actionIdentifier)
+        }
+        actionButtonView.setOnClickListener {
+            if (onClick != null) onClick()
+            else {
+                actionButtonView.isEnabled = false
+                callbacks.onAction(message, actionIdentifier, actionValue, null, renderIdentifier)
+            }
+        }
+        parent.addView(actionButtonView, createMatchParentWrapContentLayoutParams(context))
     }
 
-    private fun carousel(c: Context, message: ChatMessage, parent: LinearLayout, data: JsonObject) {
-        val cards = data.array("cards")
-        if (!features.carousel) { cards.objects().forEach { addText(c, parent, it.str("title").orEmpty()) }; return }
-        val scroll = HorizontalScrollView(c).apply { isHorizontalScrollBarEnabled = false }
-        val strip = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+    private fun carousel(context: Context, message: ChatMessage, parent: LinearLayout, data: JsonObject) {
+        val cards = data.readArray("cards")
+        if (!features.carousel) { cards.objects().forEach { addText(context, parent, it.readString("title").orEmpty()) }; return }
+        val scroll = HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled = false }
+        val strip = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
         for (card in cards.objects()) {
-            val col = android.view.LayoutInflater.from(c).inflate(com.artemis.uisdk.R.layout.artemis_template_card, strip, false) as LinearLayout
-            addText(c, col, card.str("title").orEmpty(), bold = true)
-            card.str("subtitle")?.let { addText(c, col, it) }
-            card.str("image_url")?.let { image(c, col, JsonObject().apply { addProperty("url", it) }) }
-            card.array("buttons").objects().forEach { button ->
-                val id = button.str("id") ?: return@forEach
-                actionButton(c, message, col, id, button.str("label") ?: id, button.str("label") ?: id, null)
+            val carouselCardLayout = android.view.LayoutInflater.from(context).inflate(R.layout.artemis_template_card, strip, false) as LinearLayout
+            addText(context, carouselCardLayout, card.readString("title").orEmpty(), bold = true)
+            card.readString("subtitle")?.let { subtitle -> addText(context, carouselCardLayout, subtitle) }
+            card.readString("image_url")?.let { imageUrl -> image(context, carouselCardLayout, JsonObject().apply { addProperty("url", imageUrl) }) }
+            card.readArray("buttons").objects().forEach { button ->
+                val actionIdentifier = button.readString("id") ?: return@forEach
+                actionButton(context, message, carouselCardLayout, actionIdentifier,
+                    button.readString("label") ?: actionIdentifier, button.readString("label") ?: actionIdentifier, null)
             }
-            card.str("default_action_url")?.let { url -> col.setOnClickListener { openUrl(c, url) } }
-            strip.addView(col, LinearLayout.LayoutParams(c.dp(260), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = c.dp(8) })
+            card.readString("default_action_url")?.let { actionUrl ->
+                carouselCardLayout.setOnClickListener { openUrl(context, actionUrl) }
+            }
+            strip.addView(carouselCardLayout, LinearLayout.LayoutParams(context.densityIndependentPixelsToPixels(260), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = context.densityIndependentPixelsToPixels(8) })
         }
-        scroll.addView(strip); parent.addView(scroll, matchWrap(c))
+        scroll.addView(strip); parent.addView(scroll, createMatchParentWrapContentLayoutParams(context))
     }
 
-    private fun image(c: Context, parent: LinearLayout, data: JsonObject) {
-        val url = data.str("url") ?: return
-        val view = (android.view.LayoutInflater.from(c).inflate(com.artemis.uisdk.R.layout.artemis_template_image, parent, false) as ImageView).apply { contentDescription = data.str("alt") ?: data.str("caption") ?: "Image" }
-        loadImage(url) { bitmap -> if (bitmap != null) view.setImageBitmap(bitmap) else view.contentDescription = "Image could not be loaded" }
-        parent.addView(view, LinearLayout.LayoutParams(-1, c.dp(190)))
-        data.str("caption")?.let { addText(c, parent, it) }
+    private fun image(context: Context, parent: LinearLayout, data: JsonObject) {
+        val url = data.readString("url") ?: return
+        val templateImageView = (android.view.LayoutInflater.from(context).inflate(R.layout.artemis_template_image, parent, false) as ImageView).apply { contentDescription = data.readString("alt") ?: data.readString("caption") ?: "Image" }
+        loadImage(url) { decodedBitmap ->
+            if (decodedBitmap != null) templateImageView.setImageBitmap(decodedBitmap)
+            else templateImageView.contentDescription = "Image could not be loaded"
+        }
+        parent.addView(templateImageView, LinearLayout.LayoutParams(-1, context.densityIndependentPixelsToPixels(190)))
+        data.readString("caption")?.let { addText(context, parent, it) }
     }
 
-    private fun html(c: Context, parent: LinearLayout, source: String) {
-        val safe = source.replace(Regex("(?is)<script.*?>.*?</script>"), "").replace(Regex("(?i)on[a-z]+\\s*=\\s*(['\"]).*?\\1"), "")
-        val text = TextView(c).apply { this.text = Html.fromHtml(safe, Html.FROM_HTML_MODE_COMPACT); movementMethod = LinkMovementMethod.getInstance() }
-        parent.addView(text, matchWrap(c))
+    private fun html(context: Context, parent: LinearLayout, source: String) {
+        val sanitizedHtml = source.replace(Regex("(?is)<script.*?>.*?</script>"), "").replace(Regex("(?i)on[a-z]+\\s*=\\s*(['\"]).*?\\1"), "")
+        val htmlTextView = TextView(context).apply {
+            text = Html.fromHtml(sanitizedHtml, Html.FROM_HTML_MODE_COMPACT)
+            movementMethod = LinkMovementMethod.getInstance()
+        }
+        parent.addView(htmlTextView, createMatchParentWrapContentLayoutParams(context))
     }
 
-    private fun video(c: Context, parent: LinearLayout, data: JsonObject) {
-        val url = data.str("url") ?: return
-        if (!safeUrl(url)) { addText(c, parent, "Invalid video link"); return }
-        val video = VideoView(c).apply { setVideoURI(Uri.parse(url)); setOnPreparedListener { it.isLooping = false }; setOnErrorListener { _, _, _ -> addText(c, parent, "Video could not be played"); true } }
-        val control = templateButton(c, parent).apply { text = "Play video"; setOnClickListener { video.start() } }
-        parent.addView(video, LinearLayout.LayoutParams(-1, c.dp(190))); parent.addView(control, matchWrap(c))
+    private fun video(context: Context, parent: LinearLayout, data: JsonObject) {
+        val url = data.readString("url") ?: return
+        if (!safeUrl(url)) { addText(context, parent, "Invalid video link"); return }
+        val videoPlayerView = VideoView(context).apply {
+            setVideoURI(url.toUri())
+            setOnPreparedListener { mediaPlayer -> mediaPlayer.isLooping = false }
+            setOnErrorListener { _, _, _ -> addText(context, parent, "Video could not be played"); true }
+        }
+        val videoPlaybackButton = templateButton(context, parent).apply {
+            text = context.getString(R.string.play_video)
+            setOnClickListener { videoPlayerView.start() }
+        }
+        parent.addView(videoPlayerView, LinearLayout.LayoutParams(-1, context.densityIndependentPixelsToPixels(190)))
+        parent.addView(videoPlaybackButton, createMatchParentWrapContentLayoutParams(context))
     }
 
-    private fun audio(c: Context, holder: ChatMessageAdapter.Holder, parent: LinearLayout, data: JsonObject) {
-        val url = data.str("url") ?: return
-        val button = templateButton(c, parent).apply { text = "Play audio" }
+    private fun audio(context: Context, messageViewHolder: ChatMessageAdapter.ChatMessageViewHolder, parent: LinearLayout, data: JsonObject) {
+        val url = data.readString("url") ?: return
+        val button = templateButton(context, parent).apply { text = context.getString(R.string.play_audio) }
         button.setOnClickListener {
-            if (!safeUrl(url)) { button.text = "Invalid audio link"; return@setOnClickListener }
+            if (!safeUrl(url)) { button.text = context.getString(R.string.invalid_audio_link); return@setOnClickListener }
             runCatching {
-                holder.release()
-                val player = MediaPlayer(); holder.player = player
-                player.setDataSource(url); player.setOnPreparedListener { it.start(); button.text = "Playing audio…" }
-                player.setOnCompletionListener { button.text = "Play audio" }
-                player.setOnErrorListener { _, _, _ -> button.text = "Audio unavailable"; true }
-                player.prepareAsync()
-            }.onFailure { button.text = "Audio unavailable" }
+                messageViewHolder.releaseMediaPlayer()
+                val mediaPlayer = MediaPlayer(); messageViewHolder.mediaPlayer = mediaPlayer
+                mediaPlayer.setDataSource(url); mediaPlayer.setOnPreparedListener { preparedMediaPlayer -> preparedMediaPlayer.start(); button.text =
+                context.getString(
+                    R.string.playing_audio
+                ) }
+                mediaPlayer.setOnCompletionListener { button.text =
+                    context.getString(R.string.play_audio) }
+                mediaPlayer.setOnErrorListener { _, _, _ -> button.text = context.getString(R.string.audio_unavailable); true }
+                mediaPlayer.prepareAsync()
+            }.onFailure { button.text = context.getString(R.string.audio_unavailable) }
         }
-        parent.addView(button, matchWrap(c)); data.str("caption")?.let { addText(c, parent, it) }
+        parent.addView(button, createMatchParentWrapContentLayoutParams(context)); data.readString("caption")?.let { addText(context, parent, it) }
     }
 
-    private fun file(c: Context, parent: LinearLayout, data: JsonObject) {
-        val name = data.str("filename")?.takeIf(String::isNotBlank) ?: "File"
-        val row = LinearLayout(c).apply { gravity = Gravity.CENTER_VERTICAL; orientation = LinearLayout.HORIZONTAL }
-        row.addView(TextView(c).apply {
-            text = name; textSize = 14f; setTypeface(typeface, Typeface.BOLD)
-            setTextColor(c.getColor(com.artemis.uisdk.R.color.artemis_text))
+    private fun file(context: Context, parent: LinearLayout, data: JsonObject) {
+        val fileName = data.readString("filename")?.takeIf(String::isNotBlank) ?: "File"
+        val fileRowLayout = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL; orientation = LinearLayout.HORIZONTAL }
+        fileRowLayout.addView(TextView(context).apply {
+            text = fileName; textSize = 14f; setTypeface(typeface, Typeface.BOLD)
+            setTextColor(context.getColor(R.color.artemis_text))
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        val open = templateButton(c, row).apply { text = "Open"; setOnClickListener { openUrl(c, data.str("url").orEmpty()) } }
-        row.addView(open)
-        parent.addView(row, matchWrap(c))
-        data.long("size_bytes")?.takeIf { it >= 0 }?.let { addText(c, parent, android.text.format.Formatter.formatShortFileSize(c, it)) }
+        val openFileButton = templateButton(context, fileRowLayout).apply {
+            text = context.getString(R.string.open)
+            setOnClickListener { openUrl(context, data.readString("url").orEmpty()) }
+        }
+        fileRowLayout.addView(openFileButton)
+        parent.addView(fileRowLayout, createMatchParentWrapContentLayoutParams(context))
+        data.readLong("size_bytes")?.takeIf { it >= 0 }?.let { addText(context, parent, android.text.format.Formatter.formatShortFileSize(context, it)) }
     }
 
-    private fun list(c: Context, parent: LinearLayout, data: JsonObject) {
-        data.str("title")?.let { addText(c, parent, it, bold = true) }
-        data.array("items").objects().take(100).forEach { item ->
-            val title = item.str("title")?.takeIf(String::isNotBlank) ?: return@forEach
-            val row = android.view.LayoutInflater.from(c).inflate(com.artemis.uisdk.R.layout.artemis_template_list_item, parent, false)
-            row.findViewById<TextView>(com.artemis.uisdk.R.id.artemis_list_title).text = title
-            row.findViewById<TextView>(com.artemis.uisdk.R.id.artemis_list_subtitle).apply {
-                text = item.str("subtitle")
+    private fun renderList(context: Context, parent: LinearLayout, data: JsonObject) {
+        data.readString("title")?.let { addText(context, parent, it, bold = true) }
+        data.readArray("items").objects().take(100).forEach { item ->
+            val title = item.readString("title")?.takeIf(String::isNotBlank) ?: return@forEach
+            val listItemView = android.view.LayoutInflater.from(context).inflate(R.layout.artemis_template_list_item, parent, false)
+            listItemView.findViewById<TextView>(R.id.artemis_list_title).text = title
+            listItemView.findViewById<TextView>(R.id.artemis_list_subtitle).apply {
+                text = item.readString("subtitle")
                 visibility = if (text.isNullOrBlank()) View.GONE else View.VISIBLE
             }
-            if (item.str("default_action_url") != null) row.setOnClickListener { openUrl(c, item.str("default_action_url").orEmpty()) }
-            parent.addView(row, matchWrap(c))
+            if (item.readString("default_action_url") != null) listItemView.setOnClickListener { openUrl(context, item.readString("default_action_url").orEmpty()) }
+            parent.addView(listItemView, createMatchParentWrapContentLayoutParams(context))
         }
     }
 
-    private fun kpi(c: Context, parent: LinearLayout, data: JsonObject) {
-        val label = data.str("label") ?: return
-        val value = data.get("value")?.takeIf { it.isJsonPrimitive }?.asString ?: return
-        val card = android.view.LayoutInflater.from(c).inflate(com.artemis.uisdk.R.layout.artemis_template_kpi, parent, false)
-        card.findViewById<TextView>(com.artemis.uisdk.R.id.artemis_kpi_label).text = label
-        card.findViewById<TextView>(com.artemis.uisdk.R.id.artemis_kpi_value).text = value + (data.str("unit")?.let { " $it" } ?: "")
-        card.findViewById<TextView>(com.artemis.uisdk.R.id.artemis_kpi_trend).apply {
-            text = data.str("trend")
+    private fun kpi(context: Context, parent: LinearLayout, data: JsonObject) {
+        val label = data.readString("label") ?: return
+        val metricValue = data.get("value")?.takeIf { jsonValue -> jsonValue.isJsonPrimitive }?.asString ?: return
+        val card = android.view.LayoutInflater.from(context).inflate(R.layout.artemis_template_kpi, parent, false)
+        card.findViewById<TextView>(R.id.artemis_kpi_label).text = label
+        card.findViewById<TextView>(R.id.artemis_kpi_value).text =
+            buildString {
+                append(metricValue)
+                append((data.readString("unit")?.let { unit -> " $unit" } ?: ""))
+            }
+        card.findViewById<TextView>(R.id.artemis_kpi_trend).apply {
+            text = data.readString("trend")
             visibility = if (text.isNullOrBlank()) View.GONE else View.VISIBLE
         }
         parent.addView(card)
     }
 
-    private fun table(c: Context, parent: LinearLayout, data: JsonObject) {
-        val columns = data.array("columns").objects().filter { it.str("key") != null }
-        val rows = data.array("rows").objects()
+    private fun table(context: Context, parent: LinearLayout, data: JsonObject) {
+        val columns = data.readArray("columns").objects().filter { it.readString("key") != null }
+        val rows = data.readArray("rows").objects()
         if (columns.isEmpty() || rows.isEmpty()) return
-        val limit = (data.int("max_visible_rows") ?: 10).coerceAtLeast(1).coerceAtMost(100)
-        var expanded = false
-        val wrapper = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
-        fun drawRows() {
-            wrapper.removeAllViews()
-            val horizontal = HorizontalScrollView(c)
-            val table = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
-            fun row(values: List<String>, bold: Boolean) {
-                val line = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
-                values.forEach { value ->
-                    val cell = TextView(c).apply { text = value; textSize = 13f; setTextColor(c.getColor(com.artemis.uisdk.R.color.artemis_text)); setPadding(c.dp(12)); if (bold) { setTypeface(typeface, Typeface.BOLD); setBackgroundColor(c.getColor(com.artemis.uisdk.R.color.artemis_surface)) } }
-                    line.addView(cell, LinearLayout.LayoutParams(c.dp(120), ViewGroup.LayoutParams.WRAP_CONTENT))
+        val maximumVisibleRows = (data.readInteger("max_visible_rows") ?: 10).coerceAtLeast(1).coerceAtMost(100)
+        var showAllRows = false
+        val tableContainer = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        fun drawTableRows() {
+            tableContainer.removeAllViews()
+            val tableHorizontalScrollView = HorizontalScrollView(context)
+            val tableLayout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+            fun addTableRow(cellValues: List<String>, isHeaderRow: Boolean) {
+                val tableRowLayout = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                cellValues.forEach { cellValue ->
+                    val tableCell = TextView(context).apply {
+                        text = cellValue
+                        textSize = 13f
+                        setTextColor(context.getColor(R.color.artemis_text))
+                        setPadding(context.densityIndependentPixelsToPixels(12))
+                        if (isHeaderRow) {
+                            setTypeface(typeface, Typeface.BOLD)
+                            setBackgroundColor(context.getColor(R.color.artemis_surface))
+                        }
+                    }
+                    tableRowLayout.addView(tableCell, LinearLayout.LayoutParams(context.densityIndependentPixelsToPixels(120), ViewGroup.LayoutParams.WRAP_CONTENT))
                 }
-                table.addView(line)
+                tableLayout.addView(tableRowLayout)
             }
-            row(columns.map { it.str("header").orEmpty() }, true)
-            rows.take(if (expanded) 100 else limit).forEach { r -> row(columns.map { col -> r.get(col.str("key"))?.let(::scalar) ?: "" }, false) }
-            horizontal.addView(table); wrapper.addView(horizontal)
-            if (rows.size > limit) wrapper.addView(templateButton(c, wrapper).apply { text = if (expanded) "Show less" else "Show more"; setOnClickListener { expanded = !expanded; drawRows() } })
+            addTableRow(columns.map { column -> column.readString("header").orEmpty() }, true)
+            rows.take(if (showAllRows) 100 else maximumVisibleRows).forEach { rowData ->
+                addTableRow(columns.map { column -> rowData.get(column.readString("key"))?.let(::scalar) ?: "" }, false)
+            }
+            tableHorizontalScrollView.addView(tableLayout)
+            tableContainer.addView(tableHorizontalScrollView)
+            if (rows.size > maximumVisibleRows) {
+                tableContainer.addView(templateButton(context, tableContainer).apply {
+                    text = if (showAllRows) "Show less" else "Show more"
+                    setOnClickListener {
+                        showAllRows = !showAllRows
+                        drawTableRows()
+                    }
+                })
+            }
         }
-        drawRows(); parent.addView(wrapper, matchWrap(c))
+        drawTableRows()
+        parent.addView(tableContainer, createMatchParentWrapContentLayoutParams(context))
     }
 
-    private fun chart(c: Context, parent: LinearLayout, data: JsonObject) {
-        val points = data.array("data").objects().take(100).mapNotNull { p ->
-            val value = p.get("value")?.takeIf { it.isJsonPrimitive }?.asDouble ?: return@mapNotNull null
-            Triple(p.str("label") ?: "", value, p.str("color"))
+    private fun chart(context: Context, parent: LinearLayout, data: JsonObject) {
+        val chartPoints = data.readArray("data").objects().take(100).mapNotNull { chartDataPoint ->
+            val chartPointValue = chartDataPoint.get("value")?.takeIf { jsonValue -> jsonValue.isJsonPrimitive }?.asDouble
+                ?: return@mapNotNull null
+            ChartPoint(
+                label = chartDataPoint.readString("label").orEmpty(),
+                value = chartPointValue,
+                color = chartDataPoint.readString("color"),
+            )
         }
-        if (points.isEmpty()) { addText(c, parent, "No chart data"); return }
-        data.str("title")?.let { addText(c, parent, it, bold = true) }
-        val type = data.str("type")
-        parent.addView(object : View(c) {
-            private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        if (chartPoints.isEmpty()) { addText(context, parent, "No chart data"); return }
+        data.readString("title")?.let { addText(context, parent, it, bold = true) }
+        val chartType = data.readString("type")
+        parent.addView(object : View(context) {
+            private val chartPaint = Paint(Paint.ANTI_ALIAS_FLAG)
             override fun onDraw(canvas: Canvas) {
                 super.onDraw(canvas)
-                val max = points.maxOf { it.second }.let { if (it == 0.0) 1.0 else it }
-                val each = width.toFloat() / points.size
-                if (type == "line") {
-                    paint.color = color(theme.primary, 0xFF2563EB.toInt()); paint.strokeWidth = c.dp(3).toFloat(); paint.style = Paint.Style.STROKE
-                    val path = android.graphics.Path()
-                    points.forEachIndexed { i, p -> val x = each * (i + .5f); val y = height - (p.second / max * (height - c.dp(24))).toFloat(); if (i == 0) path.moveTo(x, y) else path.lineTo(x, y) }
-                    canvas.drawPath(path, paint)
+                val maximumChartValue = chartPoints.maxOf { chartPoint -> chartPoint.value }
+                    .let { value -> if (value == 0.0) 1.0 else value }
+                val chartSlotWidth = width.toFloat() / chartPoints.size
+                if (chartType == "line") {
+                    chartPaint.color = color(theme.primary, 0xFF2563EB.toInt())
+                    chartPaint.strokeWidth = context.densityIndependentPixelsToPixels(3).toFloat()
+                    chartPaint.style = Paint.Style.STROKE
+                    val chartPath = Path()
+                    chartPoints.forEachIndexed { pointIndex, chartPoint ->
+                        val chartXPosition = chartSlotWidth * (pointIndex + .5f)
+                        val chartYPosition = height - (chartPoint.value / maximumChartValue * (height - context.densityIndependentPixelsToPixels(24))).toFloat()
+                        if (pointIndex == 0) chartPath.moveTo(chartXPosition, chartYPosition)
+                        else chartPath.lineTo(chartXPosition, chartYPosition)
+                    }
+                    canvas.drawPath(chartPath, chartPaint)
                 } else {
-                    paint.style = Paint.Style.FILL
-                    points.forEachIndexed { i, p -> paint.color = parseColor(p.third, color(theme.primary, 0xFF2563EB.toInt())); val barHeight = (p.second / max * (height - c.dp(24))).toFloat(); canvas.drawRect(each * i + c.dp(5), height - barHeight, each * (i + 1) - c.dp(5), height.toFloat(), paint) }
+                    chartPaint.style = Paint.Style.FILL
+                    chartPoints.forEachIndexed { pointIndex, chartPoint ->
+                        chartPaint.color = parseColor(chartPoint.color, color(theme.primary, 0xFF2563EB.toInt()))
+                        val barHeight = (chartPoint.value / maximumChartValue * (height - context.densityIndependentPixelsToPixels(24))).toFloat()
+                        canvas.drawRect(
+                            chartSlotWidth * pointIndex + context.densityIndependentPixelsToPixels(5),
+                            height - barHeight,
+                            chartSlotWidth * (pointIndex + 1) - context.densityIndependentPixelsToPixels(5),
+                            height.toFloat(),
+                            chartPaint,
+                        )
+                    }
                 }
             }
-        }, LinearLayout.LayoutParams(-1, c.dp(160)))
-        addText(c, parent, points.joinToString(" · ") { "${it.first}: ${it.second}" })
+        }, LinearLayout.LayoutParams(-1, context.densityIndependentPixelsToPixels(160)))
+        addText(context, parent, chartPoints.joinToString(" · ") { chartPoint -> "${chartPoint.label}: ${chartPoint.value}" })
     }
 
-    private fun form(c: Context, message: ChatMessage, parent: LinearLayout, data: JsonObject) {
-        data.str("title")?.let { addText(c, parent, it, bold = true) }
-        val fields = data.array("fields").objects().take(50)
-        val inputs = linkedMapOf<String, EditText>()
-        val selects = linkedMapOf<String, Pair<Spinner, List<JsonObject>>>()
-        var invalid = false
+    private fun form(context: Context, message: ChatMessage, parent: LinearLayout, data: JsonObject) {
+        data.readString("title")?.let { addText(context, parent, it, bold = true) }
+        val fields = data.readArray("fields").objects().take(50)
+        val textInputsByIdentifier = linkedMapOf<String, EditText>()
+        val selectionSpinnersByIdentifier = linkedMapOf<String, Pair<Spinner, List<JsonObject>>>()
+        var containsUnsupportedFields = false
         fields.forEach { field ->
-            val id = field.str("id") ?: return@forEach
-            if (inputs.containsKey(id) || selects.containsKey(id)) invalid = true
-            val label = field.str("label") ?: id
-            addText(c, parent, label + if (field.bool("required")) " *" else "")
-            if (field.str("type") == "select") {
-                val opts = field.array("options").objects().toList()
-                val spinner = Spinner(c).apply { adapter = ArrayAdapter(c, android.R.layout.simple_spinner_dropdown_item, opts.map { it.str("label") ?: it.str("id").orEmpty() }) }
-                parent.addView(spinner, matchWrap(c)); selects[id] = spinner to opts
+            val fieldIdentifier = field.readString("id") ?: return@forEach
+            if (textInputsByIdentifier.containsKey(fieldIdentifier) || selectionSpinnersByIdentifier.containsKey(fieldIdentifier)) {
+                containsUnsupportedFields = true
+            }
+            val fieldLabel = field.readString("label") ?: fieldIdentifier
+            addText(context, parent, fieldLabel + if (field.readBoolean("required")) " *" else "")
+            if (field.readString("type") == "select") {
+                val fieldOptions = field.readArray("options").objects().toList()
+                val selectionSpinner = Spinner(context).apply {
+                    adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, fieldOptions.map { option ->
+                        option.readString("label") ?: option.readString("id").orEmpty()
+                    })
+                }
+                parent.addView(selectionSpinner, createMatchParentWrapContentLayoutParams(context))
+                selectionSpinnersByIdentifier[fieldIdentifier] = selectionSpinner to fieldOptions
             } else {
-                val edit = (android.view.LayoutInflater.from(c).inflate(com.artemis.uisdk.R.layout.artemis_template_field, parent, false) as EditText).apply {
-                    hint = field.str("placeholder") ?: label
+                val fieldTextInput = (android.view.LayoutInflater.from(context).inflate(R.layout.artemis_template_field, parent, false) as EditText).apply {
+                    hint = field.readString("placeholder") ?: fieldLabel
                     setSingleLine()
-                    inputType = when (field.str("input_type") ?: field.str("type")) {
+                    inputType = when (field.readString("input_type") ?: field.readString("type")) {
                         "email" -> android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
                         "number" -> android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
                         "tel", "phone" -> android.text.InputType.TYPE_CLASS_PHONE
                         else -> android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                     }
-                    setText(field.str("value"))
-                    if ((field.str("input_type") ?: field.str("type")) == "date") {
+                    setText(field.readString("value"))
+                    if ((field.readString("input_type") ?: field.readString("type")) == "date") {
                         isFocusable = false
                         setOnClickListener {
-                            val today = java.util.Calendar.getInstance()
-                            android.app.DatePickerDialog(c, { _, year, month, day ->
-                                setText(String.format(java.util.Locale.ROOT, "%04d-%02d-%02d", year, month + 1, day))
-                            }, today.get(java.util.Calendar.YEAR), today.get(java.util.Calendar.MONTH), today.get(java.util.Calendar.DAY_OF_MONTH)).show()
+                            val currentDate = java.util.Calendar.getInstance()
+                            android.app.DatePickerDialog(context, { _, year, month, dayOfMonth ->
+                                setText(String.format(java.util.Locale.ROOT, "%04d-%02d-%02d", year, month + 1, dayOfMonth))
+                            }, currentDate.get(java.util.Calendar.YEAR), currentDate.get(java.util.Calendar.MONTH), currentDate.get(java.util.Calendar.DAY_OF_MONTH)).show()
                         }
                     }
                 }
-                parent.addView(edit, matchWrap(c)); inputs[id] = edit
+                parent.addView(fieldTextInput, createMatchParentWrapContentLayoutParams(context))
+                textInputsByIdentifier[fieldIdentifier] = fieldTextInput
             }
         }
-        if (invalid || fields.isEmpty()) { addText(c, parent, "This form contains unsupported fields"); return }
-        val button = Button(c).apply {
-            text = data.str("submit_label") ?: "Submit"
-            isEnabled = message.serverId != null && !callbacks.isLocked(message, "form-submit")
+        if (containsUnsupportedFields || fields.isEmpty()) {
+            addText(context, parent, "This form contains unsupported fields")
+            return
+        }
+        val submitFormButton = Button(context).apply {
+            text = data.readString("submit_label") ?: "Submit"
+            isEnabled = message.serverMessageId != null && !callbacks.isLocked(message, "form-submit")
             setOnClickListener {
-                val values = linkedMapOf<String, String>()
-                inputs.forEach { (id, edit) ->
-                    val required = fields.firstOrNull { it.str("id") == id }?.bool("required") == true
-                    val value = edit.text.toString().trim()
-                    if (required && value.isEmpty()) { edit.error = "Required"; return@setOnClickListener }
-                    values[id] = value
+                val submittedFormValues = linkedMapOf<String, String>()
+                textInputsByIdentifier.forEach { (fieldIdentifier, fieldTextInput) ->
+                    val isFieldRequired = fields.firstOrNull { it.readString("id") == fieldIdentifier }?.readBoolean("required") == true
+                    val enteredFieldValue = fieldTextInput.text.toString().trim()
+                    if (isFieldRequired && enteredFieldValue.isEmpty()) {
+                        fieldTextInput.error = "Required"
+                        return@setOnClickListener
+                    }
+                    submittedFormValues[fieldIdentifier] = enteredFieldValue
                 }
-                selects.forEach { (id, pair) -> values[id] = pair.second.getOrNull(pair.first.selectedItemPosition)?.str("id").orEmpty() }
-                callbacks.onAction(message, "form-submit", gsonEncode(values), values, null)
+                selectionSpinnersByIdentifier.forEach { (fieldIdentifier, spinnerAndOptions) ->
+                    val (selectionSpinner, fieldOptions) = spinnerAndOptions
+                    submittedFormValues[fieldIdentifier] = fieldOptions
+                        .getOrNull(selectionSpinner.selectedItemPosition)?.readString("id").orEmpty()
+                }
+                callbacks.onAction(message, "form-submit", encodeFormValues(submittedFormValues), submittedFormValues, null)
                 isEnabled = false
             }
         }
-        parent.addView(button, matchWrap(c))
+        parent.addView(submitFormButton, createMatchParentWrapContentLayoutParams(context))
     }
 
-    private fun progress(c: Context, parent: LinearLayout, data: JsonObject) {
-        val value = data.double("value") ?: return
-        val maxValue = data.double("max") ?: 100.0
-        if (maxValue <= 0 || !maxValue.isFinite()) { addText(c, parent, "Progress unavailable"); return }
-        data.str("label")?.let { addText(c, parent, it) }
-        val layout = if (data.str("variant") == "circle") com.artemis.uisdk.R.layout.artemis_template_progress_circle
-            else com.artemis.uisdk.R.layout.artemis_template_progress
-        val progress = android.view.LayoutInflater.from(c).inflate(layout, parent, false) as ProgressBar
-        val percent = (value / maxValue * 100).toInt().coerceIn(0, 100)
-        progress.max = 100
-        progress.progress = percent
-        progress.progressTintList = android.content.res.ColorStateList.valueOf(color(theme.primary, c.getColor(com.artemis.uisdk.R.color.artemis_primary)))
-        progress.contentDescription = "${data.str("label") ?: "Progress"}: $percent%"
-        parent.addView(progress)
-        addText(c, parent, "$percent%")
+    private fun progress(context: Context, parent: LinearLayout, data: JsonObject) {
+        val progressValue = data.readDouble("value") ?: return
+        val maxValue = data.readDouble("max") ?: 100.0
+        if (maxValue <= 0 || !maxValue.isFinite()) { addText(context, parent, "Progress unavailable"); return }
+        data.readString("label")?.let { addText(context, parent, it) }
+        val progressBarLayoutResource = if (data.readString("variant") == "circle") R.layout.artemis_template_progress_circle
+            else R.layout.artemis_template_progress
+        val progressBar = android.view.LayoutInflater.from(context).inflate(progressBarLayoutResource, parent, false) as ProgressBar
+        val completionPercentage = (progressValue / maxValue * 100).toInt().coerceIn(0, 100)
+        progressBar.max = 100
+        progressBar.progress = completionPercentage
+        progressBar.progressTintList = android.content.res.ColorStateList.valueOf(color(theme.primary, context.getColor(
+            R.color.artemis_primary)))
+        progressBar.contentDescription = "${data.readString("label") ?: "Progress"}: $completionPercentage%"
+        parent.addView(progressBar)
+        addText(context, parent, "$completionPercentage%")
     }
 
-    private fun feedback(c: Context, message: ChatMessage, parent: LinearLayout, data: JsonObject) {
-        addText(c, parent, data.str("prompt") ?: return)
-        val type = data.str("type") ?: "stars"
-        val group = com.google.android.material.chip.ChipGroup(c)
-        if (type == "thumbs") {
-            listOf("👍" to 1, "👎" to 0).forEach { (label, rating) ->
-                group.addView(templateChip(c, parent).apply {
-                    text = label; isEnabled = message.serverId != null && !callbacks.isLocked(message, "feedback")
-                    setOnClickListener { callbacks.onFeedback(message, "thumbs", rating, null); group.children().forEach { it.isEnabled = false } }
+    private fun feedback(context: Context, message: ChatMessage, parent: LinearLayout, data: JsonObject) {
+        addText(context, parent, data.readString("prompt") ?: return)
+        val feedbackType = data.readString("type") ?: "stars"
+        val feedbackChipGroup = com.google.android.material.chip.ChipGroup(context)
+        if (feedbackType == "thumbs") {
+            listOf("👍" to 1, "👎" to 0).forEach { (feedbackLabel, ratingValue) ->
+                feedbackChipGroup.addView(templateChip(context, parent).apply {
+                    text = feedbackLabel; isEnabled = message.serverMessageId != null && !callbacks.isLocked(message, "feedback")
+                    setOnClickListener {
+                        callbacks.onFeedback(message, "thumbs", ratingValue, null)
+                        feedbackChipGroup.children().forEach { feedbackChip -> feedbackChip.isEnabled = false }
+                    }
                 })
             }
         } else {
-            val max = (data.int("max") ?: 5).coerceIn(1, 10)
-            for (rating in 1..max) group.addView(Button(c).apply {
-                text = "★ $rating"; isEnabled = message.serverId != null && !callbacks.isLocked(message, "feedback")
-                setOnClickListener { callbacks.onFeedback(message, "star", rating, null); group.children().forEach { it.isEnabled = false } }
-            })
-        }
-        parent.addView(group)
-    }
-
-    private fun quickReplies(c: Context, message: ChatMessage, parent: LinearLayout, items: JsonArray) {
-        val row = com.google.android.material.chip.ChipGroup(c)
-        items.objects().take(20).forEach { item ->
-            val id = item.str("id") ?: return@forEach
-            val label = item.str("label") ?: return@forEach
-            row.addView(templateChip(c, parent).apply {
-                text = label; isEnabled = !callbacks.isLocked(message, "quick_replies")
-                setOnClickListener { callbacks.onAction(message, id, label, null, null); row.children().forEach { it.isEnabled = false } }
-            })
-        }
-        parent.addView(row, matchWrap(c))
-    }
-
-    private fun fallback(c: Context, parent: LinearLayout, title: String, value: JsonElement) {
-        val text = mutableListOf<String>()
-        fun walk(node: JsonElement, depth: Int) {
-            if (depth > 8 || text.sumOf(String::length) > 2000) return
-            when {
-                node.isJsonObject -> node.asJsonObject.entrySet().forEach { (key, child) ->
-                    if (key in setOf("text", "title", "label", "description", "content") && child.isJsonPrimitive && child.asJsonPrimitive.isString) text.add(child.asString)
-                    else walk(child, depth + 1)
+            val maximumRating = (data.readInteger("max") ?: 5).coerceIn(1, 10)
+            for (ratingValue in 1..maximumRating) feedbackChipGroup.addView(Button(context).apply {
+                text = "★ $ratingValue"; isEnabled = message.serverMessageId != null && !callbacks.isLocked(message, "feedback")
+                setOnClickListener {
+                    callbacks.onFeedback(message, "star", ratingValue, null)
+                    feedbackChipGroup.children().forEach { feedbackChip -> feedbackChip.isEnabled = false }
                 }
-                node.isJsonArray -> node.asJsonArray.forEach { walk(it, depth + 1) }
+            })
+        }
+        parent.addView(feedbackChipGroup)
+    }
+
+    private fun quickReplies(context: Context, message: ChatMessage, parent: LinearLayout, items: JsonArray) {
+        val quickReplyChipGroup = com.google.android.material.chip.ChipGroup(context)
+        items.objects().take(20).forEach { item ->
+            val quickReplyIdentifier = item.readString("id") ?: return@forEach
+            val quickReplyLabel = item.readString("label") ?: return@forEach
+            quickReplyChipGroup.addView(templateChip(context, parent).apply {
+                text = quickReplyLabel; isEnabled = !callbacks.isLocked(message, "quick_replies")
+                setOnClickListener {
+                    callbacks.onAction(message, quickReplyIdentifier, quickReplyLabel, null, null)
+                    quickReplyChipGroup.children().forEach { quickReplyChip -> quickReplyChip.isEnabled = false }
+                }
+            })
+        }
+        parent.addView(quickReplyChipGroup, createMatchParentWrapContentLayoutParams(context))
+    }
+
+    private fun fallback(context: Context, parent: LinearLayout, title: String, payload: JsonElement) {
+        val extractedTextParts = mutableListOf<String>()
+        fun collectText(node: JsonElement, nestingDepth: Int) {
+            if (nestingDepth > 8 || extractedTextParts.sumOf(String::length) > 2000) return
+            when {
+                node.isJsonObject -> node.asJsonObject.entrySet().forEach { (propertyName, propertyValue) ->
+                    if (propertyName in setOf("text", "title", "label", "description", "content") && propertyValue.isJsonPrimitive && propertyValue.asJsonPrimitive.isString) {
+                        extractedTextParts.add(propertyValue.asString)
+                    } else {
+                        collectText(propertyValue, nestingDepth + 1)
+                    }
+                }
+                node.isJsonArray -> node.asJsonArray.forEach { arrayValue -> collectText(arrayValue, nestingDepth + 1) }
             }
         }
-        walk(value, 0)
-        addText(c, parent, title, bold = true)
-        addText(c, parent, text.joinToString("\n").take(2000).ifBlank { "Content is available in another channel" })
+        collectText(payload, 0)
+        addText(context, parent, title, bold = true)
+        addText(context, parent, extractedTextParts.joinToString("\n").take(2000).ifBlank { "Content is available in another channel" })
     }
 
-    private fun isCompact(message: ChatMessage): Boolean {
-        val rich = message.richContent ?: return false
-        return (rich.has("kpi") || rich.has("progress")) && rich.entrySet().all { it.key in setOf("kpi", "progress") }
+    private fun addText(context: Context, parent: LinearLayout, text: CharSequence, bold: Boolean = false) {
+        parent.addView(TextView(context).apply { this.text = text; textSize = 14f; setTextColor(context.getColor(
+            R.color.artemis_text)); if (bold) setTypeface(typeface, Typeface.BOLD); setPadding(context.densityIndependentPixelsToPixels(4), context.densityIndependentPixelsToPixels(3), context.densityIndependentPixelsToPixels(4), context.densityIndependentPixelsToPixels(3)) }, createMatchParentWrapContentLayoutParams(context))
     }
 
-    private fun addText(c: Context, parent: LinearLayout, text: CharSequence, bold: Boolean = false) {
-        parent.addView(TextView(c).apply { this.text = text; textSize = 14f; setTextColor(c.getColor(com.artemis.uisdk.R.color.artemis_text)); if (bold) setTypeface(typeface, Typeface.BOLD); setPadding(c.dp(4), c.dp(3), c.dp(4), c.dp(3)) }, matchWrap(c))
-    }
-
-    private fun openUrl(c: Context, url: String) {
+    private fun openUrl(context: Context, url: String) {
         if (!safeUrl(url)) return
-        try { c.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } catch (_: ActivityNotFoundException) { }
+        try { context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri())) } catch (_: ActivityNotFoundException) { }
     }
 
-    private fun safeUrl(url: String): Boolean = runCatching { Uri.parse(url).scheme.equals("https", true) && Uri.parse(url).host != null }.getOrDefault(false)
+    private fun safeUrl(url: String): Boolean = runCatching { url.toUri().scheme.equals("https", true) && url.toUri().host != null }.getOrDefault(false)
 
     private fun loadImage(url: String, done: (android.graphics.Bitmap?) -> Unit) {
         if (!safeUrl(url)) { done(null); return }
@@ -449,26 +575,32 @@ internal class DefaultRichTemplateRenderer(
         }
     }
 
-    private fun rounded(color: Int, radius: Int) = GradientDrawable().apply { setColor(color); cornerRadius = radius.toFloat() }
-    private fun color(value: String?, fallback: Int) = runCatching { Color.parseColor(value) }.getOrDefault(fallback)
-    private fun parseColor(value: String?, fallback: Int) = color(value, fallback)
-    private fun matchWrap(c: Context) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = c.dp(3); bottomMargin = c.dp(3) }
-    private fun gsonEncode(value: Any) = com.google.gson.Gson().toJson(value)
-    private fun JsonObject.str(key: String) = get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
-    private fun JsonObject.int(key: String) = get(key)?.takeIf { it.isJsonPrimitive }?.asInt
-    private fun JsonObject.long(key: String) = get(key)?.takeIf { it.isJsonPrimitive }?.asLong
-    private fun JsonObject.double(key: String) = get(key)?.takeIf { it.isJsonPrimitive }?.asDouble
-    private fun JsonObject.bool(key: String) = get(key)?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
-    private fun JsonObject.array(key: String) = get(key)?.takeIf { it.isJsonArray }?.asJsonArray ?: JsonArray()
+    private fun color(colorValue: String?, fallbackColor: Int) =
+        runCatching { Color.parseColor(colorValue) }.getOrDefault(fallbackColor)
+    private fun parseColor(colorValue: String?, fallbackColor: Int) = color(colorValue, fallbackColor)
+    private fun createMatchParentWrapContentLayoutParams(context: Context) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = context.densityIndependentPixelsToPixels(3); bottomMargin = context.densityIndependentPixelsToPixels(3) }
+    private fun encodeFormValues(formValues: Any) = com.google.gson.Gson().toJson(formValues)
+    private fun JsonObject.readString(jsonPropertyName: String) =
+        get(jsonPropertyName)?.takeIf { jsonValue -> jsonValue.isJsonPrimitive && jsonValue.asJsonPrimitive.isString }?.asString
+    private fun JsonObject.readInteger(jsonPropertyName: String) =
+        get(jsonPropertyName)?.takeIf { jsonValue -> jsonValue.isJsonPrimitive }?.asInt
+    private fun JsonObject.readLong(jsonPropertyName: String) =
+        get(jsonPropertyName)?.takeIf { jsonValue -> jsonValue.isJsonPrimitive }?.asLong
+    private fun JsonObject.readDouble(jsonPropertyName: String) =
+        get(jsonPropertyName)?.takeIf { jsonValue -> jsonValue.isJsonPrimitive }?.asDouble
+    private fun JsonObject.readBoolean(jsonPropertyName: String) =
+        get(jsonPropertyName)?.takeIf { jsonValue -> jsonValue.isJsonPrimitive }?.asBoolean ?: false
+    private fun JsonObject.readArray(jsonPropertyName: String) =
+        get(jsonPropertyName)?.takeIf { jsonValue -> jsonValue.isJsonArray }?.asJsonArray ?: JsonArray()
     private fun JsonElement?.objects() = this?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull { it.takeIf(JsonElement::isJsonObject)?.asJsonObject } ?: emptyList()
-    private fun scalar(value: JsonElement) = if (value.isJsonPrimitive) value.asString else value.toString()
-    private fun Context.dp(value: Int) = (value * resources.displayMetrics.density).toInt()
-    private fun Context.dp(value: Float) = (value * resources.displayMetrics.density).toInt()
+    private fun scalar(jsonValue: JsonElement) = if (jsonValue.isJsonPrimitive) jsonValue.asString else jsonValue.toString()
+    private fun Context.densityIndependentPixelsToPixels(densityIndependentPixels: Int) =
+        (densityIndependentPixels * resources.displayMetrics.density).toInt()
 
     fun markdownHtml(text: String): String {
         val html = StringBuilder()
         val paragraph = mutableListOf<String>()
-        val list = mutableListOf<Pair<String, String>>()
+        val markdownListItems = mutableListOf<Pair<String, String>>()
         var listType: Char? = null
         val quote = mutableListOf<String>()
         val code = mutableListOf<String>()
@@ -481,9 +613,9 @@ internal class DefaultRichTemplateRenderer(
             }
         }
         fun flushList() {
-            if (list.isNotEmpty()) {
+            if (markdownListItems.isNotEmpty()) {
                 html.append("<p>")
-                list.forEachIndexed { index, item ->
+                markdownListItems.forEachIndexed { index, item ->
                     if (index > 0) html.append("<br>")
                     html.append("<artemis-list-item>")
                         .append("&nbsp;&nbsp;&nbsp;&nbsp;")
@@ -492,7 +624,7 @@ internal class DefaultRichTemplateRenderer(
                         .append("</artemis-list-item>")
                 }
                 html.append("</p>")
-                list.clear()
+                markdownListItems.clear()
             }
             listType = null
         }
@@ -515,7 +647,7 @@ internal class DefaultRichTemplateRenderer(
                 flushBlocks()
                 if (inCode) {
                     html.append("<p><artemis-code-block>")
-                        .append(code.joinToString("\n") { android.text.Html.escapeHtml(it) })
+                        .append(code.joinToString("\n") { Html.escapeHtml(it) })
                         .append("</artemis-code-block></p>")
                     code.clear()
                 }
@@ -558,7 +690,7 @@ internal class DefaultRichTemplateRenderer(
                 val type = if (ordered != null) 'o' else 'u'
                 if (listType != null && listType != type) flushList()
                 listType = type
-                list += if (ordered != null) ordered.groupValues[1] to ordered.groupValues[2]
+                markdownListItems += if (ordered != null) ordered.groupValues[1] to ordered.groupValues[2]
                     else "" to unordered!!.groupValues[1]
                 return@forEach
             }
@@ -567,7 +699,7 @@ internal class DefaultRichTemplateRenderer(
         }
         if (inCode) {
             html.append("<p><artemis-code-block>")
-                .append(code.joinToString("\n") { android.text.Html.escapeHtml(it) })
+                .append(code.joinToString("\n") { Html.escapeHtml(it) })
                 .append("</artemis-code-block></p>")
         }
         flushBlocks()
@@ -575,7 +707,7 @@ internal class DefaultRichTemplateRenderer(
     }
 
     fun parseMarkdown(context: Context, text: String): Spanned {
-        val accent = color(theme.primary, context.getColor(com.artemis.uisdk.R.color.artemis_primary))
+        val accent = color(theme.primary, context.getColor(R.color.artemis_primary))
         return Html.fromHtml(
             markdownHtml(text),
             Html.FROM_HTML_MODE_COMPACT,
@@ -587,35 +719,35 @@ internal class DefaultRichTemplateRenderer(
     private fun markdownInline(source: String): String {
         val placeholders = mutableListOf<String>()
         fun protect(value: String): String {
-            val token = "${'$'}ARTEMIS${placeholders.size}${'$'}"
+            val token = "${'$'}ARTEMIS${placeholders.size}$"
             placeholders += value
             return token
         }
         var line = source
         line = Regex("`([^`]+)`").replace(line) { match ->
-            protect("<artemis-code>${android.text.Html.escapeHtml(match.groupValues[1])}</artemis-code>")
+            protect("<artemis-code>${Html.escapeHtml(match.groupValues[1])}</artemis-code>")
         }
         line = Regex("!?\\[([^]]+)]\\(([^ )]+)(?:\\s+[\"']([^\"']*)[\"'])?\\)").replace(line) { match ->
-            val label = android.text.Html.escapeHtml(match.groupValues[1])
+            val label = Html.escapeHtml(match.groupValues[1])
             val destination = match.groupValues[2]
             val uri = runCatching { URI(destination) }.getOrNull()
             if (match.value.startsWith("!")) {
                 protect(label)
             } else if (uri != null && uri.scheme in setOf("https", "http") && !uri.host.isNullOrBlank()) {
-                val href = android.text.Html.escapeHtml(destination.replace("\"", "%22"))
+                val href = Html.escapeHtml(destination.replace("\"", "%22"))
                 protect("<a href=\"$href\">$label</a>")
             } else {
                 protect(label)
             }
         }
-        var escaped = android.text.Html.escapeHtml(line)
+        var escaped = Html.escapeHtml(line)
         escaped = escaped
             .replace(Regex("\\*\\*(.+?)\\*\\*"), "<b>$1</b>")
             .replace(Regex("(?<!\\*)\\*([^*]+?)\\*(?!\\*)"), "<i>$1</i>")
             .replace(Regex("(?<!_)_([^_]+?)_(?!_)"), "<i>$1</i>")
             .replace(Regex("~~(.+?)~~"), "<del>$1</del>")
         placeholders.forEachIndexed { index, replacement ->
-            escaped = escaped.replace("${'$'}ARTEMIS$index${'$'}", replacement)
+            escaped = escaped.replace("${'$'}ARTEMIS$index$", replacement)
         }
         return escaped
     }
@@ -628,16 +760,17 @@ internal class DefaultRichTemplateRenderer(
     private fun ViewGroup.children() = (0 until childCount).map { getChildAt(it) }
 
 
-    private fun templateChip(c: Context, parent: ViewGroup): com.google.android.material.chip.Chip =
-        (android.view.LayoutInflater.from(c).inflate(com.artemis.uisdk.R.layout.artemis_template_chip, parent, false) as com.google.android.material.chip.Chip).apply {
-            val accent = android.content.res.ColorStateList.valueOf(color(theme.primary, c.getColor(com.artemis.uisdk.R.color.artemis_primary)))
+    private fun templateChip(context: Context, parent: ViewGroup): com.google.android.material.chip.Chip =
+        (android.view.LayoutInflater.from(context).inflate(R.layout.artemis_template_chip, parent, false) as com.google.android.material.chip.Chip).apply {
+            val accent = android.content.res.ColorStateList.valueOf(color(theme.primary, context.getColor(
+                R.color.artemis_primary)))
             setTextColor(accent)
             chipStrokeColor = accent
         }
 
-    private fun templateButton(c: Context, parent: ViewGroup): Button =
-        (android.view.LayoutInflater.from(c).inflate(com.artemis.uisdk.R.layout.artemis_template_action, parent, false) as Button).apply {
-            setTextColor(color(theme.primary, c.getColor(com.artemis.uisdk.R.color.artemis_primary)))
+    private fun templateButton(context: Context, parent: ViewGroup): Button =
+        (android.view.LayoutInflater.from(context).inflate(R.layout.artemis_template_action, parent, false) as Button).apply {
+            setTextColor(color(theme.primary, context.getColor(R.color.artemis_primary)))
         }
 
     companion object {

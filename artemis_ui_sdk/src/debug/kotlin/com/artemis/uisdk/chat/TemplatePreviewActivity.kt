@@ -23,31 +23,36 @@ class TemplatePreviewActivity : AppCompatActivity() {
         else androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_NO
         super.onCreate(savedInstanceState)
         setContentView(R.layout.artemis_fragment_chat)
-        val root = findViewById<View>(android.R.id.content)
-        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
-            val padding = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
-            view.setPadding(padding.left, padding.top, padding.right, padding.bottom)
-            insets
+        val previewRootView = findViewById<View>(android.R.id.content)
+        ViewCompat.setOnApplyWindowInsetsListener(previewRootView) { previewView, windowInsets ->
+            val systemAndKeyboardInsets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
+            previewView.setPadding(
+                systemAndKeyboardInsets.left,
+                systemAndKeyboardInsets.top,
+                systemAndKeyboardInsets.right,
+                systemAndKeyboardInsets.bottom,
+            )
+            windowInsets
         }
         findViewById<TextView>(R.id.artemis_title).text = "Artemis Assistant"
         findViewById<TextView>(R.id.artemis_status).text = "Template preview · Offline"
         findViewById<View>(R.id.artemis_empty).visibility = View.GONE
         findViewById<View>(R.id.artemis_close).setOnClickListener { finish() }
         findViewById<View>(R.id.artemis_minimize).setOnClickListener { finish() }
-        val adapter = ChatMessageAdapter(ArtemisFeatureConfig(), ArtemisThemeConfig(),
+        val chatMessageAdapter = ChatMessageAdapter(ArtemisFeatureConfig(), ArtemisThemeConfig(),
             object : ChatMessageAdapter.Callbacks {
-                override fun onAction(message: ChatMessage, id: String, value: String?, data: Map<String, String>?, renderId: String?) {
-                    Toast.makeText(this@TemplatePreviewActivity, "Preview action: $id", Toast.LENGTH_SHORT).show()
+                override fun onAction(message: ChatMessage, actionIdentifier: String, actionValue: String?, formData: Map<String, String>?, renderIdentifier: String?) {
+                    Toast.makeText(this@TemplatePreviewActivity, "Preview action: $actionIdentifier", Toast.LENGTH_SHORT).show()
                 }
-                override fun onFeedback(message: ChatMessage, type: String, rating: Int, text: String?) {
+                override fun onFeedback(message: ChatMessage, feedbackType: String, rating: Int, feedbackText: String?) {
                     Toast.makeText(this@TemplatePreviewActivity, "Preview rating: $rating", Toast.LENGTH_SHORT).show()
                 }
                 override fun isLocked(message: ChatMessage, actionId: String) = false
             })
-        val list = findViewById<RecyclerView>(R.id.artemis_messages)
-        list.layoutManager = LinearLayoutManager(this)
-        list.adapter = adapter
-        val examples = listOf(
+        val chatMessagesRecyclerView = findViewById<RecyclerView>(R.id.artemis_messages)
+        chatMessagesRecyclerView.layoutManager = LinearLayoutManager(this)
+        chatMessagesRecyclerView.adapter = chatMessageAdapter
+        val richContentExamples = listOf(
             """{"quick_replies":[{"id":"orders","label":"Track my order"},{"id":"products","label":"Explore products"},{"id":"help","label":"Talk to support"}]}""",
             """{"kpi":{"label":"Total savings this month","value":"2,480","unit":"USD","trend":"+12.8% compared with last month"}}""",
             """{"carousel":{"cards":[{"title":"Everyday essentials","subtitle":"Thoughtful picks for your day","buttons":[{"id":"explore","label":"Explore collection"}]},{"title":"Something special","subtitle":"Discover our latest arrivals","buttons":[{"id":"new","label":"See what is new"}]}]}}""",
@@ -61,7 +66,7 @@ class TemplatePreviewActivity : AppCompatActivity() {
             """{"file":{"filename":"Order confirmation.pdf","size_bytes":184320,"url":"https://example.com/confirmation.pdf"}}""",
             """{"html":"<b>Rich content</b><p>Native templates keep content structured and easy to read.</p>"}"""
         )
-        val messages = mutableListOf(
+        val previewMessages = mutableListOf(
             ChatMessage("welcome", role = MessageRole.ASSISTANT, text = "Hello! How can I help you today?"),
             ChatMessage("user", role = MessageRole.USER, text = "Show me what I can do here."),
             ChatMessage(
@@ -73,20 +78,22 @@ class TemplatePreviewActivity : AppCompatActivity() {
                     "If you already have a reference, ticket, or case ID, send that too.",
             ),
         )
-        messages += examples.mapIndexed { index, json ->
-            ChatMessage("template-$index", serverId = "preview-$index", role = MessageRole.ASSISTANT,
-                text = "", richContent = JsonParser.parseString(json).asJsonObject)
+        previewMessages += richContentExamples.mapIndexed { exampleIndex, exampleJson ->
+            ChatMessage("template-$exampleIndex", serverMessageId = "preview-$exampleIndex", role = MessageRole.ASSISTANT,
+                text = "", richContent = JsonParser.parseString(exampleJson).asJsonObject)
         }
-        adapter.submitList(messages.toList()) {
-            list.scrollToPosition(intent.getIntExtra("position", 0).coerceIn(0, messages.lastIndex))
+        chatMessageAdapter.submitList(previewMessages.toList()) {
+            chatMessagesRecyclerView.scrollToPosition(intent.getIntExtra("position", 0).coerceIn(0, previewMessages.lastIndex))
         }
-        val input = findViewById<EditText>(R.id.artemis_input)
+        val messageInputEditText = findViewById<EditText>(R.id.artemis_input)
         findViewById<View>(R.id.artemis_send).setOnClickListener {
-            val text = input.text.toString().trim()
-            if (text.isNotEmpty()) {
-                messages += ChatMessage("local-${messages.size}", role = MessageRole.USER, text = text)
-                adapter.submitList(messages.toList()) { list.scrollToPosition(messages.lastIndex) }
-                input.text.clear()
+            val messageText = messageInputEditText.text.toString().trim()
+            if (messageText.isNotEmpty()) {
+                previewMessages += ChatMessage("local-${previewMessages.size}", role = MessageRole.USER, text = messageText)
+                chatMessageAdapter.submitList(previewMessages.toList()) {
+                    chatMessagesRecyclerView.scrollToPosition(previewMessages.lastIndex)
+                }
+                messageInputEditText.text.clear()
             }
         }
     }

@@ -4,252 +4,324 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
-import android.util.Log
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.lifecycle.ViewModel
-import com.artemis.uisdk.BuildConfig
 import artemis.socket.ArtemisFeedbackCallback
 import artemis.socket.ArtemisSocketClient
 import artemis.socket.ArtemisSocketConfiguration
 import artemis.socket.ArtemisSocketListener
 import com.artemis.uisdk.ArtemisUiEvent
 import com.artemis.uisdk.ArtemisUiHandle
+import com.artemis.uisdk.BuildConfig
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.UUID
 
-class ArtemisChatViewModel(private val handle: ArtemisUiHandle) : ViewModel() {
+class ArtemisChatViewModel(private val artemisUiHandle: ArtemisUiHandle) : ViewModel() {
     private companion object {
         const val RESPONSE_LOG_TAG = "ArtemisUI"
         const val RESPONSE_LOG_CHUNK_SIZE = 3000
     }
 
-    private val main = Handler(Looper.getMainLooper())
-    private val gson = Gson()
-    private val _state = MutableStateFlow(ChatUiState())
-    val state: StateFlow<ChatUiState> = _state.asStateFlow()
-    private val lockedActions = mutableSetOf<String>()
-    private var client: ArtemisSocketClient? = null
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
-    private var started = false
-    private var closed = false
+    private val mainThreadHandler = Handler(Looper.getMainLooper())
+    private val gsonSerializer = Gson()
+    private val mutableChatUiState = MutableStateFlow(ChatUiState())
+    val state: StateFlow<ChatUiState> = mutableChatUiState.asStateFlow()
+    private val lockedActionKeys = mutableSetOf<String>()
+    private var artemisSocketClient: ArtemisSocketClient? = null
+    private var registeredConnectivityNetworkCallback: ConnectivityManager.NetworkCallback? = null
+    private var hasStarted = false
+    private var isClosed = false
 
     init {
-        handle.shutdownSession = ::closeSession
+        artemisUiHandle.chatSessionShutdownCallback = ::closeSession
     }
 
     fun start() {
-        if (started || closed) return
-        started = true
+        if (hasStarted || isClosed) return
+        hasStarted = true
         observeConnectivity()
-        val connection = handle.config.connection
+        val connectionConfig = artemisUiHandle.config.connection
         try {
-            val socketConfig = ArtemisSocketConfiguration.builder()
-                .endpoint(connection.endpoint)
-                .projectId(connection.projectId)
-                .apiKey(connection.apiKey)
-                .channelId(connection.channelId)
-                .channelName(connection.channelName)
+            val socketConfiguration = ArtemisSocketConfiguration.builder()
+                .endpoint(connectionConfig.endpoint)
+                .projectId(connectionConfig.projectId)
+                .apiKey(connectionConfig.apiKey)
+                .channelId(connectionConfig.channelId)
+                .channelName(connectionConfig.channelName)
                 .reconnection(
-                    handle.config.reconnection.enabled,
-                    handle.config.reconnection.maxAttempts,
-                    handle.config.reconnection.baseDelayMs,
-                    handle.config.reconnection.maxDelayMs,
+                    artemisUiHandle.config.reconnection.enabled,
+                    artemisUiHandle.config.reconnection.maxAttempts,
+                    artemisUiHandle.config.reconnection.baseDelayMs,
+                    artemisUiHandle.config.reconnection.maxDelayMs,
                 )
                 .build()
-            client = ArtemisSocketClient(socketConfig, socketListener)
-            setState(_state.value.copy(status = ConnectionStatus.CONNECTING, error = null))
-            handle.emit(ArtemisUiEvent.ConnectionChanged("CONNECTING"))
-            client?.connect()
+            artemisSocketClient = ArtemisSocketClient(socketConfiguration, socketListener)
+            setState(mutableChatUiState.value.copy(connectionStatus = ConnectionStatus.CONNECTING, errorMessage = null))
+            artemisUiHandle.emit(ArtemisUiEvent.ConnectionChanged("CONNECTING"))
+            artemisSocketClient?.connect()
         } catch (error: RuntimeException) {
             fail("CONFIGURATION", error.message ?: "Invalid connection configuration", false)
         }
     }
 
     fun sendText(text: String) {
-        val content = text.trim()
-        if (content.isEmpty() || content.codePointCount(0, content.length) > 10_000) return
-        val active = client ?: return
-        if (_state.value.status != ConnectionStatus.CONNECTED || _state.value.offline) return
-        val id = UUID.randomUUID().toString()
-        val local = ChatMessage(id = id, role = MessageRole.USER, text = content, status = MessageStatus.PENDING)
-        append(local)
+        val trimmedMessageText = text.trim()
+        if (trimmedMessageText.isEmpty() || trimmedMessageText.codePointCount(0, trimmedMessageText.length) > 10_000) return
+        val activeSocketClient = artemisSocketClient ?: return
+        if (mutableChatUiState.value.connectionStatus != ConnectionStatus.CONNECTED || mutableChatUiState.value.isOffline) return
+        val localMessageId = UUID.randomUUID().toString()
+        val pendingUserMessage = ChatMessage(
+            messageId = localMessageId,
+            role = MessageRole.USER,
+            text = trimmedMessageText,
+            messageStatus = MessageStatus.PENDING,
+        )
+        append(pendingUserMessage)
         try {
-            active.sendMessage(content)
-            updateMessage(id) { it.copy(status = MessageStatus.ACCEPTED) }
-            setState(_state.value.copy(typing = true, error = null))
+            activeSocketClient.sendMessage(trimmedMessageText)
+            updateMessage(localMessageId) { chatMessage -> chatMessage.copy(messageStatus = MessageStatus.ACCEPTED) }
+            setState(mutableChatUiState.value.copy(isTyping = true, errorMessage = null))
         } catch (error: RuntimeException) {
-            updateMessage(id) { it.copy(status = MessageStatus.FAILED) }
-            setState(_state.value.copy(error = error.message ?: "Message could not be sent"))
-            handle.emit(ArtemisUiEvent.Error("SEND_REJECTED", "Message could not be sent", true))
+            updateMessage(localMessageId) { chatMessage -> chatMessage.copy(messageStatus = MessageStatus.FAILED) }
+            setState(mutableChatUiState.value.copy(errorMessage = error.message ?: "Message could not be sent"))
+            artemisUiHandle.emit(ArtemisUiEvent.Error("SEND_REJECTED", "Message could not be sent", true))
         }
     }
 
-    fun submitAction(messageId: String, actionId: String, value: String?, formData: Map<String, String>?, renderId: String?) {
-        if (_state.value.status != ConnectionStatus.CONNECTED || _state.value.offline) return
-        val key = "$messageId:$actionId"
-        if (!lockedActions.add(key)) return
+    fun submitAction(
+        messageId: String,
+        actionIdentifier: String,
+        actionValue: String?,
+        formData: Map<String, String>?,
+        renderIdentifier: String?,
+    ) {
+        if (mutableChatUiState.value.connectionStatus != ConnectionStatus.CONNECTED || mutableChatUiState.value.isOffline) return
+        val actionLockKey = "$messageId:$actionIdentifier"
+        if (!lockedActionKeys.add(actionLockKey)) return
         try {
-            client?.submitAction(actionId, value, formData, renderId)
-            setState(_state.value.copy(typing = true, error = null))
+            artemisSocketClient?.submitAction(actionIdentifier, actionValue, formData, renderIdentifier)
+            setState(mutableChatUiState.value.copy(isTyping = true, errorMessage = null))
         } catch (error: RuntimeException) {
-            lockedActions.remove(key)
-            setState(_state.value.copy(error = error.message ?: "Action could not be sent"))
-            handle.emit(ArtemisUiEvent.Error("SEND_REJECTED", "Action could not be sent", true))
+            lockedActionKeys.remove(actionLockKey)
+            setState(mutableChatUiState.value.copy(errorMessage = error.message ?: "Action could not be sent"))
+            artemisUiHandle.emit(ArtemisUiEvent.Error("SEND_REJECTED", "Action could not be sent", true))
         }
     }
 
     fun submitFeedback(messageId: String, ratingType: String, ratingValue: Int, feedbackText: String?) {
-        if (_state.value.status != ConnectionStatus.CONNECTED || _state.value.offline) return
-        val key = "$messageId:feedback"
-        if (!lockedActions.add(key)) return
+        if (mutableChatUiState.value.connectionStatus != ConnectionStatus.CONNECTED || mutableChatUiState.value.isOffline) return
+        val feedbackLockKey = "$messageId:feedback"
+        if (!lockedActionKeys.add(feedbackLockKey)) return
         try {
-            client?.submitFeedback(messageId, ratingType, ratingValue, feedbackText, null,
+            artemisSocketClient?.submitFeedback(messageId, ratingType, ratingValue, feedbackText, null,
                 object : ArtemisFeedbackCallback {
                     override fun onSuccess(feedbackId: String) {
-                        lockedActions.add(key)
+                        lockedActionKeys.add(feedbackLockKey)
                     }
                     override fun onFailure(code: String, message: String) {
-                        lockedActions.remove(key)
-                        setState(_state.value.copy(error = message))
-                        handle.emit(ArtemisUiEvent.Error(code, message, true))
+                        lockedActionKeys.remove(feedbackLockKey)
+                        setState(mutableChatUiState.value.copy(errorMessage = message))
+                        artemisUiHandle.emit(ArtemisUiEvent.Error(code, message, true))
                     }
                 })
         } catch (error: RuntimeException) {
-            lockedActions.remove(key)
-            setState(_state.value.copy(error = error.message ?: "Feedback could not be sent"))
+            lockedActionKeys.remove(feedbackLockKey)
+            setState(mutableChatUiState.value.copy(errorMessage = error.message ?: "Feedback could not be sent"))
         }
     }
 
-    fun isActionLocked(messageId: String, actionId: String) = "$messageId:$actionId" in lockedActions
+    fun isActionLocked(messageId: String, actionIdentifier: String) =
+        "$messageId:$actionIdentifier" in lockedActionKeys
 
     fun retry() {
-        if (closed) return
-        if (handle.isClosed()) return
-        client?.shutdown()
-        client = null
-        started = false
-        setState(_state.value.copy(status = ConnectionStatus.CONNECTING, error = null))
+        if (isClosed) return
+        if (artemisUiHandle.isClosed()) return
+        artemisSocketClient?.shutdown()
+        artemisSocketClient = null
+        hasStarted = false
+        setState(mutableChatUiState.value.copy(connectionStatus = ConnectionStatus.CONNECTING, errorMessage = null))
         start()
     }
 
     fun closeSession(reason: String) {
-        if (closed) return
-        closed = true
+        if (isClosed) return
+        isClosed = true
         unregisterConnectivity()
-        client?.shutdown()
-        client = null
-        handle.finishChat(reason)
+        artemisSocketClient?.shutdown()
+        artemisSocketClient = null
+        artemisUiHandle.finishChat(reason)
     }
 
     private val socketListener = object : ArtemisSocketListener {
         override fun onLog(message: String) = Unit
-        override fun onConnecting() = update { it.copy(status = ConnectionStatus.CONNECTING) }
+        override fun onConnecting() = update { chatUiState ->
+            chatUiState.copy(connectionStatus = ConnectionStatus.CONNECTING)
+        }
         override fun onConnected(sessionId: String) {
-            update { it.copy(status = ConnectionStatus.CONNECTED, error = null) }
-            handle.emit(ArtemisUiEvent.ConnectionChanged("CONNECTED"))
+            update { chatUiState ->
+                chatUiState.copy(connectionStatus = ConnectionStatus.CONNECTED, errorMessage = null)
+            }
+            artemisUiHandle.emit(ArtemisUiEvent.ConnectionChanged("CONNECTED"))
         }
         override fun onDisconnected(reason: String) {
-            update { it.copy(status = ConnectionStatus.DISCONNECTED, typing = false) }
-            handle.emit(ArtemisUiEvent.ConnectionChanged("DISCONNECTED", reason))
+            update { chatUiState ->
+                chatUiState.copy(connectionStatus = ConnectionStatus.DISCONNECTED, isTyping = false)
+            }
+            artemisUiHandle.emit(ArtemisUiEvent.ConnectionChanged("DISCONNECTED", reason))
         }
         override fun onMessage(payload: String) = parseFrame(payload)
         override fun onError(error: Throwable) {
-            val detail = safeError(error)
-            update { it.copy(error = detail) }
-            handle.emit(ArtemisUiEvent.Error("CONNECTION", detail, true))
+            val errorDescription = safeError(error)
+            update { chatUiState -> chatUiState.copy(errorMessage = errorDescription) }
+            artemisUiHandle.emit(ArtemisUiEvent.Error("CONNECTION", errorDescription, true))
         }
     }
 
     private fun parseFrame(payload: String) {
-        val frame = runCatching { JsonParser.parseString(payload).asJsonObject }.getOrNull() ?: return
-        when (frame.get("type")?.asString) {
+        val incomingMessageFrame = runCatching { JsonParser.parseString(payload).asJsonObject }.getOrNull() ?: return
+        when (incomingMessageFrame.get("type")?.asString) {
             "response_start" -> {
-                val id = frame.get("messageId")?.asString?.takeIf(String::isNotBlank) ?: return
-                if (_state.value.messages.none { it.id == id }) {
-                    append(ChatMessage(id, serverId = id, role = MessageRole.ASSISTANT, text = "", status = MessageStatus.STREAMING))
+                val serverMessageId = incomingMessageFrame.get("messageId")?.asString?.takeIf(String::isNotBlank) ?: return
+                if (mutableChatUiState.value.messages.none { chatMessage -> chatMessage.messageId == serverMessageId }) {
+                    append(ChatMessage(
+                        messageId = serverMessageId,
+                        serverMessageId = serverMessageId,
+                        role = MessageRole.ASSISTANT,
+                        text = "",
+                        messageStatus = MessageStatus.STREAMING,
+                    ))
                 }
-                setState(_state.value.copy(typing = true))
+                setState(mutableChatUiState.value.copy(isTyping = true))
             }
             "response_chunk" -> {
-                val id = frame.get("messageId")?.asString?.takeIf(String::isNotBlank) ?: return
-                val chunk = listOf("chunk", "content", "text").firstNotNullOfOrNull { frame.get(it)?.takeIf { v -> v.isJsonPrimitive && v.asJsonPrimitive.isString }?.asString } ?: return
-                val old = _state.value.messages.firstOrNull { it.id == id }
-                if (old == null) append(ChatMessage(id, serverId = id, role = MessageRole.ASSISTANT, text = chunk, status = MessageStatus.STREAMING))
-                else updateMessage(id) { it.copy(text = it.text + chunk, status = MessageStatus.STREAMING) }
-                setState(_state.value.copy(typing = true))
+                val serverMessageId = incomingMessageFrame.get("messageId")?.asString?.takeIf(String::isNotBlank) ?: return
+                val responseChunk = listOf("chunk", "content", "text").firstNotNullOfOrNull { contentFieldName ->
+                    incomingMessageFrame.get(contentFieldName)?.takeIf { jsonValue ->
+                        jsonValue.isJsonPrimitive && jsonValue.asJsonPrimitive.isString
+                    }?.asString
+                } ?: return
+                val existingAssistantMessage = mutableChatUiState.value.messages.firstOrNull { chatMessage ->
+                    chatMessage.messageId == serverMessageId
+                }
+                if (existingAssistantMessage == null) {
+                    append(ChatMessage(
+                        messageId = serverMessageId,
+                        serverMessageId = serverMessageId,
+                        role = MessageRole.ASSISTANT,
+                        text = responseChunk,
+                        messageStatus = MessageStatus.STREAMING,
+                    ))
+                } else {
+                    updateMessage(serverMessageId) { chatMessage ->
+                        chatMessage.copy(text = chatMessage.text + responseChunk, messageStatus = MessageStatus.STREAMING)
+                    }
+                }
+                setState(mutableChatUiState.value.copy(isTyping = true))
             }
-            "response_end" -> finishAssistant(frame)
-            "error" -> setState(_state.value.copy(typing = false, error = "The assistant could not complete the response"))
+            "response_end" -> finishAssistant(incomingMessageFrame)
+            "error" -> setState(mutableChatUiState.value.copy(
+                isTyping = false,
+                errorMessage = "The assistant could not complete the response",
+            ))
         }
     }
 
-    private fun finishAssistant(frame: JsonObject) {
-        val id = frame.get("messageId")?.asString?.takeIf(String::isNotBlank) ?: UUID.randomUUID().toString()
-        val envelope = frame.getAsJsonObject("contentEnvelope")
-        val text = listOf("fullText", "text", "content").firstNotNullOfOrNull { frame.get(it)?.takeIf { v -> v.isJsonPrimitive && v.asJsonPrimitive.isString }?.asString }
-            ?: envelope?.get("text")?.asString
-            ?: envelope?.get("content")?.asString
-            ?: _state.value.messages.firstOrNull { it.id == id }?.text.orEmpty()
-        val rich = firstObject(frame, "richContent", "rich_content")
-            ?: envelope?.let { firstObject(it, "richContent", "rich_content") }
-        val metadata = frame.getAsJsonObject("metadata")?.deepCopy() ?: JsonObject()
-        if (rich != null) metadata.add("richContent", rich)
-        val actions = firstObject(frame, "actions") ?: envelope?.getAsJsonObject("actions")
-        if (text.isBlank() && rich == null && actions == null) {
-            removeMessage(id)
-            setState(_state.value.copy(typing = false))
+    private fun finishAssistant(incomingMessageFrame: JsonObject) {
+        val serverMessageId = incomingMessageFrame.get("messageId")?.asString?.takeIf(String::isNotBlank)
+            ?: UUID.randomUUID().toString()
+        val contentEnvelope = incomingMessageFrame.getAsJsonObject("contentEnvelope")
+        val assistantMessageText = listOf("fullText", "text", "content").firstNotNullOfOrNull { contentFieldName ->
+            incomingMessageFrame.get(contentFieldName)?.takeIf { jsonValue ->
+                jsonValue.isJsonPrimitive && jsonValue.asJsonPrimitive.isString
+            }?.asString
+        }
+            ?: contentEnvelope?.get("text")?.asString
+            ?: contentEnvelope?.get("content")?.asString
+            ?: mutableChatUiState.value.messages.firstOrNull { chatMessage -> chatMessage.messageId == serverMessageId }?.text.orEmpty()
+        val richContent = firstObject(incomingMessageFrame, "richContent", "rich_content")
+            ?: contentEnvelope?.let { envelope -> firstObject(envelope, "richContent", "rich_content") }
+        val messageMetadata = incomingMessageFrame.getAsJsonObject("metadata")?.deepCopy() ?: JsonObject()
+        if (richContent != null) messageMetadata.add("richContent", richContent)
+        val messageActions = firstObject(incomingMessageFrame, "actions") ?: contentEnvelope?.getAsJsonObject("actions")
+        if (assistantMessageText.isBlank() && richContent == null && messageActions == null) {
+            removeMessage(serverMessageId)
+            setState(mutableChatUiState.value.copy(isTyping = false))
             return
         }
-        val message = ChatMessage(id, serverId = frame.get("messageId")?.asString, role = MessageRole.ASSISTANT,
-            text = text, metadata = metadata, richContent = rich, actions = actions, status = MessageStatus.COMPLETE)
-        logBotResponse(message)
-        if (_state.value.messages.any { it.id == id }) updateMessage(id) { message } else append(message)
-        setState(_state.value.copy(typing = false, error = null))
-        handle.emit(ArtemisUiEvent.MessageChanged(id, "assistant"))
+        val assistantMessage = ChatMessage(
+            messageId = serverMessageId,
+            serverMessageId = incomingMessageFrame.get("messageId")?.asString,
+            role = MessageRole.ASSISTANT,
+            text = assistantMessageText,
+            metadata = messageMetadata,
+            richContent = richContent,
+            actions = messageActions,
+            messageStatus = MessageStatus.COMPLETE,
+        )
+        logBotResponse(assistantMessage)
+        if (mutableChatUiState.value.messages.any { chatMessage -> chatMessage.messageId == serverMessageId }) {
+            updateMessage(serverMessageId) { assistantMessage }
+        } else {
+            append(assistantMessage)
+        }
+        setState(mutableChatUiState.value.copy(isTyping = false, errorMessage = null))
+        artemisUiHandle.emit(ArtemisUiEvent.MessageChanged(serverMessageId, "assistant"))
     }
 
     /** Full response details can contain user data; keep verbose response logging out of release builds. */
-    private fun logBotResponse(message: ChatMessage) {
+    private fun logBotResponse(assistantMessage: ChatMessage) {
         if (!BuildConfig.DEBUG) return
-        val response = gson.toJson(JsonObject().apply {
-            addProperty("messageId", message.id)
-            addProperty("text", message.text)
-            message.richContent?.let { add("richContent", it.deepCopy()) }
-            message.actions?.let { add("actions", it.deepCopy()) }
+        val serializedResponse = gsonSerializer.toJson(JsonObject().apply {
+            addProperty("messageId", assistantMessage.messageId)
+            addProperty("text", assistantMessage.text)
+            assistantMessage.richContent?.let { richContent -> add("richContent", richContent.deepCopy()) }
+            assistantMessage.actions?.let { messageActions -> add("actions", messageActions.deepCopy()) }
         })
-        var start = 0
-        var part = 1
-        while (start < response.length) {
-            var end = (start + RESPONSE_LOG_CHUNK_SIZE).coerceAtMost(response.length)
-            if (end < response.length && Character.isHighSurrogate(response[end - 1])) end--
-            Log.d(RESPONSE_LOG_TAG, "Bot response [$part]: ${response.substring(start, end)}")
-            start = end
-            part++
+        var logStartIndex = 0
+        var logPartNumber = 1
+        while (logStartIndex < serializedResponse.length) {
+            var logEndIndex = (logStartIndex + RESPONSE_LOG_CHUNK_SIZE).coerceAtMost(serializedResponse.length)
+            if (logEndIndex < serializedResponse.length && Character.isHighSurrogate(serializedResponse[logEndIndex - 1])) logEndIndex--
+            Log.d(RESPONSE_LOG_TAG, "Bot response [$logPartNumber]: ${serializedResponse.substring(logStartIndex, logEndIndex)}")
+            logStartIndex = logEndIndex
+            logPartNumber++
         }
     }
 
-    private fun firstObject(obj: JsonObject, vararg keys: String): JsonObject? = keys.firstNotNullOfOrNull { key ->
-        obj.get(key)?.takeIf { it.isJsonObject }?.asJsonObject
+    private fun firstObject(jsonObject: JsonObject, vararg propertyNames: String): JsonObject? =
+        propertyNames.firstNotNullOfOrNull { propertyName ->
+        jsonObject.get(propertyName)?.takeIf { jsonValue -> jsonValue.isJsonObject }?.asJsonObject
     }
     private fun append(message: ChatMessage) {
-        setState(_state.value.copy(messages = (_state.value.messages + message).takeLast(500)))
-        handle.emit(ArtemisUiEvent.MessageChanged(message.id, message.role.name.lowercase()))
+        setState(mutableChatUiState.value.copy(messages = (mutableChatUiState.value.messages + message).takeLast(500)))
+        artemisUiHandle.emit(ArtemisUiEvent.MessageChanged(message.messageId, message.role.name.lowercase()))
     }
-    private fun updateMessage(id: String, change: (ChatMessage) -> ChatMessage) {
-        setState(_state.value.copy(messages = _state.value.messages.map { if (it.id == id) change(it) else it }))
+    private fun updateMessage(messageId: String, transformMessage: (ChatMessage) -> ChatMessage) {
+        setState(mutableChatUiState.value.copy(messages = mutableChatUiState.value.messages.map { chatMessage ->
+            if (chatMessage.messageId == messageId) transformMessage(chatMessage) else chatMessage
+        }))
     }
-    private fun removeMessage(id: String) = setState(_state.value.copy(messages = _state.value.messages.filterNot { it.id == id }))
-    private fun setState(value: ChatUiState) { if (Looper.myLooper() == Looper.getMainLooper()) _state.value = value else main.post { if (!closed) _state.value = value } }
-    private fun update(transform: (ChatUiState) -> ChatUiState) = setState(transform(_state.value))
+    private fun removeMessage(messageId: String) = setState(mutableChatUiState.value.copy(
+        messages = mutableChatUiState.value.messages.filterNot { chatMessage -> chatMessage.messageId == messageId },
+    ))
+    private fun setState(newChatUiState: ChatUiState) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            mutableChatUiState.value = newChatUiState
+        } else {
+            mainThreadHandler.post { if (!isClosed) mutableChatUiState.value = newChatUiState }
+        }
+    }
+    private fun update(transformState: (ChatUiState) -> ChatUiState) = setState(transformState(mutableChatUiState.value))
     private fun fail(code: String, message: String, recoverable: Boolean) {
-        setState(_state.value.copy(status = ConnectionStatus.FAILED, error = message))
-        handle.emit(ArtemisUiEvent.Error(code, message, recoverable))
+        setState(mutableChatUiState.value.copy(connectionStatus = ConnectionStatus.FAILED, errorMessage = message))
+        artemisUiHandle.emit(ArtemisUiEvent.Error(code, message, recoverable))
     }
     private fun safeError(error: Throwable) = when (error) {
         is java.io.IOException -> "Connection problem. Check the network and retry."
@@ -257,27 +329,43 @@ class ArtemisChatViewModel(private val handle: ArtemisUiHandle) : ViewModel() {
     }
 
     private fun observeConnectivity() {
-        val cm = handle.appContext.getSystemService(ConnectivityManager::class.java) ?: return
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = updateOffline(cm)
-            override fun onLost(network: Network) = updateOffline(cm)
-            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = updateOffline(cm)
-            private fun updateOffline(manager: ConnectivityManager) {
-                val online = manager.activeNetwork?.let { manager.getNetworkCapabilities(it)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) } == true
-                update { it.copy(offline = !online) }
+        val connectivityManager = artemisUiHandle.appContext.getSystemService(ConnectivityManager::class.java) ?: return
+        val connectivityNetworkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = updateOfflineState(connectivityManager)
+            override fun onLost(network: Network) = updateOfflineState(connectivityManager)
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = updateOfflineState(connectivityManager)
+            private fun updateOfflineState(connectivityManager: ConnectivityManager) {
+                val hasInternetConnection = connectivityManager.activeNetwork?.let { activeNetwork ->
+                    connectivityManager.getNetworkCapabilities(activeNetwork)
+                        ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                } == true
+                update { chatUiState -> chatUiState.copy(isOffline = !hasInternetConnection) }
             }
         }
-        networkCallback = callback
-        runCatching { cm.registerNetworkCallback(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), callback) }
-        val online = cm.activeNetwork?.let { cm.getNetworkCapabilities(it)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) } == true
-        setState(_state.value.copy(offline = !online))
+        registeredConnectivityNetworkCallback = connectivityNetworkCallback
+        runCatching {
+            connectivityManager.registerNetworkCallback(
+                NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
+                connectivityNetworkCallback,
+            )
+        }
+        val hasInternetConnection = connectivityManager.activeNetwork?.let { activeNetwork ->
+            connectivityManager.getNetworkCapabilities(activeNetwork)
+                ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } == true
+        setState(mutableChatUiState.value.copy(isOffline = !hasInternetConnection))
     }
 
     private fun unregisterConnectivity() {
-        val callback = networkCallback ?: return
-        runCatching { handle.appContext.getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(callback) }
-        networkCallback = null
+        val registeredNetworkCallback = registeredConnectivityNetworkCallback ?: return
+        runCatching {
+            artemisUiHandle.appContext.getSystemService(ConnectivityManager::class.java)
+                ?.unregisterNetworkCallback(registeredNetworkCallback)
+        }
+        registeredConnectivityNetworkCallback = null
     }
 
-    override fun onCleared() { closeSession("VIEWMODEL_CLEARED") }
+    override fun onCleared() {
+        closeSession("VIEWMODEL_CLEARED")
+    }
 }

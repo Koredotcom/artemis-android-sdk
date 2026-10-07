@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="configuration_unavailable_reopen_chat">Configuration unavailable. Reopen chat.</string>
+    <string name="close">Close</string>
+    <string name="open">Open</string>
+    <string name="audio_unavailable">Audio unavailable</string>
+    <string name="play_audio">Play audio</string>
+    <string name="playing_audio">Playing audio…</string>
+    <string name="invalid_audio_link">Invalid audio link</string>
+    <string name="play_video">Play video</string>
+</resources>
