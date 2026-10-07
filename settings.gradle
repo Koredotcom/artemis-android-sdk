@@ -1,1 +1,1 @@
-include ':artemis_socket_sdk'
+include ':artemis_socket_sdk', ':app'
