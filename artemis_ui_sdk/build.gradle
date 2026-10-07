@@ -35,7 +35,7 @@ android {
 }
 
 dependencies {
-    implementation 'com.github.SudheerJa-Kore:android-kore-sdk:as-0.0.2'
+    implementation 'com.github.Koredotcom:artemis-android-sdk:socket-0.0.1'
     implementation 'androidx.appcompat:appcompat:1.7.1'
     implementation 'androidx.activity:activity-ktx:1.10.1'
     implementation 'androidx.fragment:fragment-ktx:1.8.8'

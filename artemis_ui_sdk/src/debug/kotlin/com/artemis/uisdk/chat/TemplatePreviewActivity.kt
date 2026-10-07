@@ -47,7 +47,7 @@ class TemplatePreviewActivity : AppCompatActivity() {
                 override fun onFeedback(message: ChatMessage, feedbackType: String, rating: Int, feedbackText: String?) {
                     Toast.makeText(this@TemplatePreviewActivity, "Preview rating: $rating", Toast.LENGTH_SHORT).show()
                 }
-                override fun isLocked(message: ChatMessage, actionId: String) = false
+                override fun isLocked(message: ChatMessage, actionIdentifier: String) = false
             })
         val chatMessagesRecyclerView = findViewById<RecyclerView>(R.id.artemis_messages)
         chatMessagesRecyclerView.layoutManager = LinearLayoutManager(this)
