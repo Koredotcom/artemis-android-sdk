@@ -1,0 +1,3 @@
+<resources>
+    <bool name="artemis_light_navigation">false</bool>
+</resources>

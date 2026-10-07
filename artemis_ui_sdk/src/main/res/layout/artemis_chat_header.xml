@@ -1,0 +1,17 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/artemis_header" android:layout_width="match_parent" android:layout_height="64dp"
+    android:gravity="center_vertical" android:orientation="horizontal"
+    android:paddingStart="16dp" android:paddingEnd="8dp" android:background="@color/artemis_primary">
+    <TextView android:id="@+id/artemis_avatar" android:layout_width="36dp" android:layout_height="36dp"
+        android:gravity="center" android:text="A" android:textSize="16sp" android:textStyle="bold"
+        android:textColor="#FFFFFF" android:background="@drawable/artemis_avatar_background" android:importantForAccessibility="no" />
+    <TextView android:id="@+id/artemis_title" android:layout_width="0dp" android:layout_height="wrap_content"
+        android:layout_weight="1" android:layout_marginStart="12dp" android:textSize="17sp"
+        android:textStyle="bold" android:maxLines="1" android:ellipsize="end" android:textColor="#FFFFFF" />
+    <ImageButton android:id="@+id/artemis_minimize" android:layout_width="48dp" android:layout_height="48dp"
+        android:src="@drawable/artemis_ic_minimize" android:background="?attr/selectableItemBackgroundBorderless"
+        android:padding="13dp" android:contentDescription="@string/artemis_minimize" />
+    <ImageButton android:id="@+id/artemis_close" android:layout_width="48dp" android:layout_height="48dp"
+        android:src="@drawable/artemis_ic_close" android:background="?attr/selectableItemBackgroundBorderless"
+        android:padding="13dp" android:contentDescription="@string/artemis_close" />
+</LinearLayout>

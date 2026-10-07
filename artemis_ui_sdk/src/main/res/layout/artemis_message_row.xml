@@ -1,0 +1,15 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
+    android:paddingTop="4dp" android:paddingBottom="12dp">
+    <LinearLayout android:id="@+id/artemis_bubble" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="12dp">
+        <TextView android:id="@+id/artemis_message_text" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:textSize="16sp" android:textColor="@color/artemis_text" android:lineSpacingMultiplier="1.25"
+            android:textIsSelectable="true" />
+        <LinearLayout android:id="@+id/artemis_message_templates" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:orientation="vertical" />
+    </LinearLayout>
+    <TextView android:id="@+id/artemis_timestamp" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:textSize="11sp" android:textColor="@color/artemis_muted" android:layout_marginTop="4dp"
+        android:paddingStart="4dp" android:paddingEnd="4dp" />
+</LinearLayout>

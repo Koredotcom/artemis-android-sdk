@@ -1,0 +1,6 @@
+<com.google.android.material.button.MaterialButton xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+    android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp"
+    android:layout_marginTop="4dp" android:textAllCaps="false" android:textSize="14sp"
+    app:cornerRadius="12dp" app:strokeColor="@color/artemis_border" />

@@ -1,0 +1,6 @@
+<EditText xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:minHeight="48dp" android:padding="12dp" android:layout_marginTop="6dp"
+    android:background="@drawable/artemis_card_background" android:textSize="14sp"
+    android:textColor="@color/artemis_text" android:textColorHint="@color/artemis_muted"
+    android:inputType="textCapSentences" />

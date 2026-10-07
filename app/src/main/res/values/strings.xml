@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="enter_your_runtime_configuration">Enter your runtime configuration to launch the reusable chat UI. The API key remains in memory for this sample session.</string>
+    <string name="artemis_android_ui_sdk">Artemis Android UI SDK</string>
+    <string name="open_chat">Open chat</string>
+    <string name="socket_module_artemis_socket_sdk_artemis_socket_0_0_2">Socket module: artemis_socket_sdk:artemis-socket-0.0.2</string>
+</resources>

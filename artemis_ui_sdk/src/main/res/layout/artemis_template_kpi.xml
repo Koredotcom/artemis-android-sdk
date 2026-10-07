@@ -1,0 +1,9 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+    <TextView android:id="@+id/artemis_kpi_label" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:textSize="13sp" android:textColor="@color/artemis_muted" />
+    <TextView android:id="@+id/artemis_kpi_value" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" android:textSize="30sp" android:textStyle="bold" android:textColor="@color/artemis_text" />
+    <TextView android:id="@+id/artemis_kpi_trend" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="6dp" android:textSize="13sp" android:textColor="@color/artemis_muted" />
+</LinearLayout>

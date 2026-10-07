@@ -1,0 +1,11 @@
+<resources>
+    <string name="artemis_close">Close chat</string>
+    <string name="artemis_minimize">Minimize chat</string>
+    <string name="artemis_send">Send message</string>
+    <string name="artemis_hint">Type a message…</string>
+    <string name="artemis_empty_title">No messages yet</string>
+    <string name="artemis_empty_body">Start a conversation with your AI assistant</string>
+    <string name="artemis_typing">Assistant is typing…</string>
+    <string name="artemis_retry">Retry connection</string>
+    <string name="artemis_unavailable">Configuration unavailable. Reopen chat.</string>
+</resources>

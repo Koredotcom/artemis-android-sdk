@@ -1,0 +1,4 @@
+<ImageView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="190dp"
+    android:adjustViewBounds="true" android:scaleType="centerCrop"
+    android:background="@drawable/artemis_card_background" android:clipToOutline="true" />

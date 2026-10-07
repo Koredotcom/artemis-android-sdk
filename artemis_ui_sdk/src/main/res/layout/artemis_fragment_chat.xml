@@ -1,0 +1,23 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical"
+    android:background="@color/artemis_background">
+    <include layout="@layout/artemis_chat_header" />
+    <TextView android:id="@+id/artemis_status" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:minHeight="28dp" android:gravity="center_vertical" android:paddingStart="16dp" android:paddingEnd="16dp"
+        android:paddingTop="6dp" android:paddingBottom="6dp" android:textSize="12sp"
+        android:textColor="@color/artemis_muted" android:background="@color/artemis_surface" android:accessibilityLiveRegion="polite" />
+    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+        <androidx.recyclerview.widget.RecyclerView android:id="@+id/artemis_messages"
+            android:layout_width="match_parent" android:layout_height="match_parent"
+            android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="16dp" android:paddingBottom="8dp"
+            android:clipToPadding="false" />
+        <include layout="@layout/artemis_chat_empty" />
+    </FrameLayout>
+    <TextView android:id="@+id/artemis_typing" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:layout_marginStart="20dp" android:paddingTop="8dp" android:paddingBottom="8dp" android:visibility="gone"
+        android:text="@string/artemis_typing" android:textSize="13sp" android:textColor="@color/artemis_muted"
+        android:accessibilityLiveRegion="polite" />
+    <Button android:id="@+id/artemis_retry" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal" android:text="@string/artemis_retry" android:visibility="gone" />
+    <include layout="@layout/artemis_chat_composer" />
+</LinearLayout>

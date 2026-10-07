@@ -1,0 +1,9 @@
+<resources>
+    <color name="artemis_primary">#2563EB</color>
+    <color name="artemis_background">#FFFFFF</color>
+    <color name="artemis_surface">#F8FAFC</color>
+    <color name="artemis_assistant_bubble">#F1F5F9</color>
+    <color name="artemis_text">#1E293B</color>
+    <color name="artemis_muted">#64748B</color>
+    <color name="artemis_border">#E2E8F0</color>
+</resources>
