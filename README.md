@@ -38,18 +38,14 @@ dependencyResolutionManagement {
 }
 ```
 
-After a GitHub release is created from this branch, add the SDK dependency to
-your app module. The artifact ID is `artemis-socket-sdk`; replace `v1.0.0` with
-the tag of the release you want to use:
+The socket SDK is released as `socket-0.0.1`. Add the same dependency used by
+the master branch to your app module:
 
 ```groovy
 dependencies {
-    implementation 'com.github.Koredotcom.artemis-android-sdk:artemis-socket-sdk:v1.0.0'
+    implementation 'com.github.Koredotcom:artemis-android-sdk:socket-0.0.1'
 }
 ```
-
-For the current unreleased branch, use
-`artemis_socket_sdk-SNAPSHOT` in place of the release tag.
 
 ## Configure and connect
 
