@@ -38,6 +38,22 @@ Add `--ez dark true` for dark mode or `--ei position 9` to jump to a later messa
 
 ## Host integration
 
+Add JitPack to your host project's dependency repositories:
+
+```groovy
+maven { url = uri("https://jitpack.io") }
+```
+
+Once the `ui-0.0.1` tag has been published successfully on JitPack, add:
+
+```groovy
+implementation 'com.github.Koredotcom:artemis-android-sdk:ui-0.0.1'
+```
+
+Only the UI library is published; the sample app is not a Maven artifact. The
+socket dependency is included transitively, so no separate socket dependency is
+required in the host app.
+
 Add the UI artifact to a host app and initialize it with its runtime configuration:
 
 ```kotlin
@@ -61,7 +77,7 @@ The YAML loader accepts `sdk_configurations.yaml` under the `artemis_ui_sdk` or 
 
 ## Socket dependency status
 
-The current dependency is `com.github.SudheerJa-Kore:android-kore-sdk:as-0.0.2`, declared in `artemis_ui_sdk/build.gradle`.
+The current dependency is `com.github.Koredotcom:artemis-android-sdk:socket-0.0.1`, declared in `artemis_ui_sdk/build.gradle`.
 
 ## Build
 
@@ -70,3 +86,23 @@ bash gradlew :artemis_ui_sdk:assembleRelease :app:assembleDebug
 ```
 
 The repository targets Android API 24+, compiles against API 36, and uses Java 17.
+
+## JitPack release
+
+`jitpack.yml` selects Java 17 and publishes only `:artemis_ui_sdk`. The publication
+version follows JitPack's `VERSION` environment variable, defaulting locally to
+`ui-0.0.1`. The release includes an AAR, dependency metadata, and a sources JAR.
+
+Before tagging, run:
+
+```shell
+bash gradlew :artemis_ui_sdk:assembleRelease :artemis_ui_sdk:lintRelease :artemis_ui_sdk:publishToMavenLocal :app:assembleDebug
+```
+
+Review and commit the release files, then create and push the `ui-0.0.1` tag on
+that commit. Look up `Koredotcom/artemis-android-sdk` and `ui-0.0.1` on JitPack and
+confirm the build succeeds before distributing the dependency coordinate.
+
+Release lint disables only `NullSafeMutableLiveData` because the Lifecycle 2.9
+detector crashes with AGP 8.7's Kotlin analysis API; this SDK uses StateFlow and
+contains no MutableLiveData. Other release lint checks remain enabled.
