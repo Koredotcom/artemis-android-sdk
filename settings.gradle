@@ -17,4 +17,6 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "ArtemisAndroidUI"
-include(":app", ":artemis_ui_sdk")
+include(":app")
+include(":artemis_ui_sdk")
+include(":artemis_socket_sdk")
