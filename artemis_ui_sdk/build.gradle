@@ -61,7 +61,7 @@ afterEvaluate {
             release(MavenPublication) {
                 from components.release
                 groupId = 'com.artemis'
-                artifactId = 'artemis-ui-sdk'
+                artifactId = 'ui'
                 version = project.version
             }
         }

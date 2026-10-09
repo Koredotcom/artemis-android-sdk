@@ -8,7 +8,7 @@ afterEvaluate {
             release(MavenPublication) {
                 from components.release
                 groupId 'com.artemis'
-                artifactId 'artemis-socket-sdk'
+                artifactId 'socket'
                 version '1.0.0'
             }
         }
