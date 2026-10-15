@@ -13,4 +13,10 @@ public interface ArtemisSocketListener {
     void onMessage(String payload);
 
     void onError(Throwable error);
+
+    /** Sanitized Runtime policy/branding from SDK init or refresh; never contains the SDK token. */
+    default void onSessionScopeChanged(com.google.gson.JsonObject scope) { }
+
+    /** Persisted history delivered only for the currently attached session. */
+    default void onHistory(String sessionId, String messagesJson) { }
 }

@@ -3,7 +3,18 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Only the sample application consumes these values; local properties are never committed.
+def sampleRuntimeProperties = new Properties()
+def sampleRuntimeFile = rootProject.file('sample-runtime.local.properties')
+if (sampleRuntimeFile.isFile()) {
+    sampleRuntimeFile.withInputStream { sampleRuntimeProperties.load(it) }
+}
+def sampleRuntimeValue = { String key, String fallback ->
+    System.getenv("ARTEMIS_SAMPLE_${key}") ?: sampleRuntimeProperties.getProperty(key, fallback)
+}
+
 android {
+    buildFeatures { buildConfig = true }
     namespace 'com.artemis.uisdk.sample'
     compileSdk 36
 
@@ -13,7 +24,12 @@ android {
         targetSdk 36
         versionCode 1
         versionName '1.0'
+        [ENDPOINT: '', PROJECT_ID: '', API_KEY: '', CHANNEL_ID: '', CHAT_TITLE: 'Support'].each { key, fallback ->
+            buildConfigField 'String', "ARTEMIS_SAMPLE_${key}", groovy.json.JsonOutput.toJson(sampleRuntimeValue(key, fallback))
+        }
     }
+
+    testOptions { unitTests.includeAndroidResources = true }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -26,4 +42,7 @@ dependencies {
     implementation project(':artemis_ui_sdk')
     implementation 'androidx.appcompat:appcompat:1.7.1'
     implementation 'com.google.android.material:material:1.12.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.16.1'
+    // Build the local SDK so the sample exercises the changes under development.
 }

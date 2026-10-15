@@ -1,0 +1,8 @@
+<resources>
+    <dimen name="artemis_icon_action">18dp</dimen>
+    <dimen name="artemis_icon_file">20dp</dimen>
+    <dimen name="artemis_icon_button_padding">15dp</dimen>
+    <dimen name="artemis_avatar_size">32dp</dimen>
+    <dimen name="artemis_composer_action_size">40dp</dimen>
+    <dimen name="artemis_composer_icon_padding">10dp</dimen>
+</resources>

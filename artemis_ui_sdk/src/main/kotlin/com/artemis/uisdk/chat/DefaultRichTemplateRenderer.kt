@@ -35,8 +35,6 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import java.net.URI
-import java.net.URL
-import java.util.concurrent.Executors
 
 /** Built-in rich-content rendering. Layouts live in res/layout/artemis_template_*.xml. */
 internal class DefaultRichTemplateRenderer(
@@ -44,6 +42,12 @@ internal class DefaultRichTemplateRenderer(
     private val theme: ArtemisThemeConfig,
     private val callbacks: ChatMessageAdapter.Callbacks,
 ) {
+    private val images = TemplateImageLoader()
+    private val markdownCache = object : android.util.LruCache<String, Spanned>(64 * 1024) {
+        override fun sizeOf(key: String, value: Spanned) = (key.length + value.length).coerceAtLeast(1)
+    }
+    fun clearCaches() { images.clear(); markdownCache.evictAll() }
+
     private data class ChartPoint(val label: String, val value: Double, val color: String?)
 
     fun renderRich(context: Context, messageViewHolder: ChatMessageAdapter.ChatMessageViewHolder, message: ChatMessage, parent: LinearLayout, richContentObject: JsonObject) {
@@ -60,7 +64,7 @@ internal class DefaultRichTemplateRenderer(
                     "carousel" -> carousel(context, message, templateContainer, templatePayload.asJsonObject)
                     "image" -> image(context, templateContainer, templatePayload.asJsonObject)
                     "html" -> html(context, templateContainer, templatePayload.asString)
-                    "video" -> video(context, templateContainer, templatePayload.asJsonObject)
+                    "video" -> video(context, messageViewHolder, templateContainer, templatePayload.asJsonObject)
                     "audio" -> audio(context, messageViewHolder, templateContainer, templatePayload.asJsonObject)
                     "file" -> file(context, templateContainer, templatePayload.asJsonObject)
                     "list" -> renderList(context, templateContainer, templatePayload.asJsonObject)
@@ -92,8 +96,8 @@ internal class DefaultRichTemplateRenderer(
             val actionLabel = actionElement.readString("label") ?: continue
             when (actionElement.readString("type") ?: "button") {
                 "button" -> actionButton(context, message, parent, actionIdentifier, actionLabel,
-                    actionElement.readString("value") ?: actionElement.readString("payload") ?: actionElement.readString("url") ?: actionIdentifier,
-                    renderIdentifier)
+                    TemplateContracts.actionValue(actionElement),
+                    renderIdentifier, url = actionElement.readString("url"))
                 "input" -> {
                     val messageInput = (android.view.LayoutInflater.from(context).inflate(R.layout.artemis_template_field, parent, false) as EditText).apply {
                         hint = actionElement.readString("placeholder") ?: actionLabel
@@ -152,13 +156,15 @@ internal class DefaultRichTemplateRenderer(
     }
 
     private fun actionButton(context: Context, message: ChatMessage, parent: LinearLayout, actionIdentifier: String,
-                             actionLabel: String, actionValue: String?, renderIdentifier: String?, onClick: (() -> Unit)? = null) {
+                             actionLabel: String, actionValue: String?, renderIdentifier: String?, url: String? = null, onClick: (() -> Unit)? = null) {
         val actionButtonView = templateButton(context, parent).apply {
             text = actionLabel
-            isEnabled = !callbacks.isLocked(message, actionIdentifier)
+            isEnabled = TemplateContracts.actionUrl(url) != null || !callbacks.isLocked(message, actionIdentifier)
         }
         actionButtonView.setOnClickListener {
-            if (onClick != null) onClick()
+            val link = TemplateContracts.actionUrl(url)
+            if (link != null) openActionUrl(context, link)
+            else if (onClick != null) onClick()
             else {
                 actionButtonView.isEnabled = false
                 callbacks.onAction(message, actionIdentifier, actionValue, null, renderIdentifier)
@@ -180,7 +186,7 @@ internal class DefaultRichTemplateRenderer(
             card.readArray("buttons").objects().forEach { button ->
                 val actionIdentifier = button.readString("id") ?: return@forEach
                 actionButton(context, message, carouselCardLayout, actionIdentifier,
-                    button.readString("label") ?: actionIdentifier, button.readString("label") ?: actionIdentifier, null)
+                    button.readString("label") ?: actionIdentifier, TemplateContracts.actionValue(button), null, url = button.readString("url"))
             }
             card.readString("default_action_url")?.let { actionUrl ->
                 carouselCardLayout.setOnClickListener { openUrl(context, actionUrl) }
@@ -210,18 +216,18 @@ internal class DefaultRichTemplateRenderer(
         parent.addView(htmlTextView, createMatchParentWrapContentLayoutParams(context))
     }
 
-    private fun video(context: Context, parent: LinearLayout, data: JsonObject) {
+    private fun video(context: Context, holder: ChatMessageAdapter.ChatMessageViewHolder, parent: LinearLayout, data: JsonObject) {
         val url = data.readString("url") ?: return
         if (!safeUrl(url)) { addText(context, parent, "Invalid video link"); return }
         val videoPlayerView = VideoView(context).apply {
-            setVideoURI(url.toUri())
             setOnPreparedListener { mediaPlayer -> mediaPlayer.isLooping = false }
             setOnErrorListener { _, _, _ -> addText(context, parent, "Video could not be played"); true }
         }
         val videoPlaybackButton = templateButton(context, parent).apply {
             text = context.getString(R.string.play_video)
-            setOnClickListener { videoPlayerView.start() }
+            setOnClickListener { videoPlayerView.setVideoURI(url.toUri()); videoPlayerView.start() }
         }
+        holder.videoViews.add(videoPlayerView)
         parent.addView(videoPlayerView, LinearLayout.LayoutParams(-1, context.densityIndependentPixelsToPixels(190)))
         parent.addView(videoPlaybackButton, createMatchParentWrapContentLayoutParams(context))
     }
@@ -229,12 +235,15 @@ internal class DefaultRichTemplateRenderer(
     private fun audio(context: Context, messageViewHolder: ChatMessageAdapter.ChatMessageViewHolder, parent: LinearLayout, data: JsonObject) {
         val url = data.readString("url") ?: return
         val button = templateButton(context, parent).apply { text = context.getString(R.string.play_audio) }
+        messageViewHolder.onMediaReleased = { button.text = context.getString(R.string.play_audio) }
         button.setOnClickListener {
             if (!safeUrl(url)) { button.text = context.getString(R.string.invalid_audio_link); return@setOnClickListener }
             runCatching {
                 messageViewHolder.releaseMediaPlayer()
                 val mediaPlayer = MediaPlayer(); messageViewHolder.mediaPlayer = mediaPlayer
-                mediaPlayer.setDataSource(url); mediaPlayer.setOnPreparedListener { preparedMediaPlayer -> preparedMediaPlayer.start(); button.text =
+                mediaPlayer.setDataSource(url); mediaPlayer.setOnPreparedListener { preparedMediaPlayer ->
+                    if (messageViewHolder.mediaPlayer !== preparedMediaPlayer) return@setOnPreparedListener
+                    preparedMediaPlayer.start(); button.text =
                 context.getString(
                     R.string.playing_audio
                 ) }
@@ -258,7 +267,9 @@ internal class DefaultRichTemplateRenderer(
             text = context.getString(R.string.open)
             setOnClickListener { openUrl(context, data.readString("url").orEmpty()) }
         }
-        fileRowLayout.addView(openFileButton)
+        // A full-width button in this horizontal row leaves the filename at zero width,
+        // causing extreme text wrapping and a near-screen-height attachment card.
+        fileRowLayout.addView(openFileButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         parent.addView(fileRowLayout, createMatchParentWrapContentLayoutParams(context))
         data.readLong("size_bytes")?.takeIf { it >= 0 }?.let { addText(context, parent, android.text.format.Formatter.formatShortFileSize(context, it)) }
     }
@@ -347,6 +358,7 @@ internal class DefaultRichTemplateRenderer(
         val chartPoints = data.readArray("data").objects().take(100).mapNotNull { chartDataPoint ->
             val chartPointValue = chartDataPoint.get("value")?.takeIf { jsonValue -> jsonValue.isJsonPrimitive }?.asDouble
                 ?: return@mapNotNull null
+            if (!chartPointValue.isFinite()) return@mapNotNull null
             ChartPoint(
                 label = chartDataPoint.readString("label").orEmpty(),
                 value = chartPointValue,
@@ -358,12 +370,27 @@ internal class DefaultRichTemplateRenderer(
         val chartType = data.readString("type")
         parent.addView(object : View(context) {
             private val chartPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+            private val pieBounds = android.graphics.RectF()
+            private val piePalette = listOf(0xFF2563EB.toInt(), 0xFF10B981.toInt(), 0xFFF59E0B.toInt(), 0xFF8B5CF6.toInt(), 0xFFEC4899.toInt())
+            private val pieSweeps = TemplateContracts.pieSweeps(chartPoints.map { it.value })
             override fun onDraw(canvas: Canvas) {
                 super.onDraw(canvas)
                 val maximumChartValue = chartPoints.maxOf { chartPoint -> chartPoint.value }
                     .let { value -> if (value == 0.0) 1.0 else value }
                 val chartSlotWidth = width.toFloat() / chartPoints.size
-                if (chartType == "line") {
+                if (chartType == "pie") {
+                    chartPaint.style = Paint.Style.FILL
+                    val diameter = minOf(width, height).toFloat()
+                    val left = (width - diameter) / 2
+                    val top = (height - diameter) / 2
+                    pieBounds.set(left, top, left + diameter, top + diameter)
+                    var angle = -90f
+                    pieSweeps.forEachIndexed { i, sweep ->
+                        chartPaint.color = parseColor(chartPoints[i].color, piePalette[i % piePalette.size])
+                        canvas.drawArc(pieBounds, angle, sweep, true, chartPaint)
+                        angle += sweep
+                    }
+                } else if (chartType == "line") {
                     chartPaint.color = color(theme.primary, 0xFF2563EB.toInt())
                     chartPaint.strokeWidth = context.densityIndependentPixelsToPixels(3).toFloat()
                     chartPaint.style = Paint.Style.STROKE
@@ -493,6 +520,11 @@ internal class DefaultRichTemplateRenderer(
         addText(context, parent, data.readString("prompt") ?: return)
         val feedbackType = data.readString("type") ?: "stars"
         val feedbackChipGroup = com.google.android.material.chip.ChipGroup(context)
+        if (feedbackType !in setOf("thumbs", "star", "stars")) {
+            // Full surveys arrive in phase 8; never silently submit a different rating type.
+            addText(context, parent, "This feedback type is not available yet")
+            return
+        }
         if (feedbackType == "thumbs") {
             listOf("👍" to 1, "👎" to 0).forEach { (feedbackLabel, ratingValue) ->
                 feedbackChipGroup.addView(templateChip(context, parent).apply {
@@ -557,6 +589,23 @@ internal class DefaultRichTemplateRenderer(
             R.color.artemis_text)); if (bold) setTypeface(typeface, Typeface.BOLD); setPadding(context.densityIndependentPixelsToPixels(4), context.densityIndependentPixelsToPixels(3), context.densityIndependentPixelsToPixels(4), context.densityIndependentPixelsToPixels(3)) }, createMatchParentWrapContentLayoutParams(context))
     }
 
+    fun renderRenderables(context: Context, holder: ChatMessageAdapter.ChatMessageViewHolder, message: ChatMessage, parent: LinearLayout) {
+        message.renderables?.forEach { entry ->
+            val item = entry.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
+            val name = item.string("name") ?: return@forEach
+            if (name in com.artemis.uisdk.templates.ArtemisDefaultTemplates.types && message.richContent?.has(name) != true) {
+                renderRich(context, holder, message, parent, JsonObject().apply { add(name, item.get("payload")) })
+            } else if (name !in com.artemis.uisdk.templates.ArtemisDefaultTemplates.types) {
+                item.string("fallbackText")?.takeIf { it.isNotBlank() && it != message.text }?.let { addText(context, parent, it) }
+            }
+        }
+    }
+
+    private fun openActionUrl(context: Context, url: String) {
+        if (TemplateContracts.actionUrl(url) == null) return
+        try { context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri())) } catch (_: ActivityNotFoundException) { }
+    }
+
     private fun openUrl(context: Context, url: String) {
         if (!safeUrl(url)) return
         try { context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri())) } catch (_: ActivityNotFoundException) { }
@@ -564,16 +613,7 @@ internal class DefaultRichTemplateRenderer(
 
     private fun safeUrl(url: String): Boolean = runCatching { url.toUri().scheme.equals("https", true) && url.toUri().host != null }.getOrDefault(false)
 
-    private fun loadImage(url: String, done: (android.graphics.Bitmap?) -> Unit) {
-        if (!safeUrl(url)) { done(null); return }
-        imageExecutor.execute {
-            val bitmap = runCatching {
-                val connection = URL(url).openConnection().apply { connectTimeout = 5000; readTimeout = 5000 }
-                connection.getInputStream().use { android.graphics.BitmapFactory.decodeStream(it) }
-            }.getOrNull()
-            android.os.Handler(android.os.Looper.getMainLooper()).post { done(bitmap) }
-        }
-    }
+    private fun loadImage(url: String, done: (android.graphics.Bitmap?) -> Unit) = images.load(url, done)
 
     private fun color(colorValue: String?, fallbackColor: Int) =
         runCatching { Color.parseColor(colorValue) }.getOrDefault(fallbackColor)
@@ -707,13 +747,14 @@ internal class DefaultRichTemplateRenderer(
     }
 
     fun parseMarkdown(context: Context, text: String): Spanned {
+        markdownCache.get(text)?.let { return it }
         val accent = color(theme.primary, context.getColor(R.color.artemis_primary))
         return Html.fromHtml(
             markdownHtml(text),
             Html.FROM_HTML_MODE_COMPACT,
             null,
             MarkdownTagHandler(context, accent),
-        )
+        ).also { markdownCache.put(text, it) }
     }
 
     private fun markdownInline(source: String): String {
@@ -773,7 +814,4 @@ internal class DefaultRichTemplateRenderer(
             setTextColor(color(theme.primary, context.getColor(R.color.artemis_primary)))
         }
 
-    companion object {
-        private val imageExecutor = Executors.newFixedThreadPool(2)
-    }
 }

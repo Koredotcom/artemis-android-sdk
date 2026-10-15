@@ -1,0 +1,31 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto" android:id="@+id/artemis_attachment_draft" android:layout_width="240dp" android:layout_height="wrap_content"
+            android:orientation="vertical" android:background="@drawable/artemis_composer_background"
+            android:layout_marginEnd="8dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="horizontal" android:gravity="center_vertical" android:paddingStart="12dp" android:paddingTop="6dp" android:paddingBottom="6dp">
+                <ImageView android:id="@+id/artemis_attachment_icon" android:layout_width="@dimen/artemis_icon_file" android:layout_height="@dimen/artemis_icon_file" android:src="@drawable/artemis_ic_file" android:importantForAccessibility="no" />
+                <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                    android:orientation="vertical" android:layout_marginStart="10dp">
+                    <TextView android:id="@+id/artemis_attachment_filename" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:textSize="14sp" android:fontFamily="sans-serif-medium" android:textColor="@color/artemis_text"
+                        android:maxLines="1" android:ellipsize="middle" />
+                    <TextView android:id="@+id/artemis_attachment_status" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp" android:textColor="@color/artemis_muted" android:textSize="12sp"
+                        android:accessibilityLiveRegion="polite" />
+                </LinearLayout>
+                <LinearLayout android:id="@+id/artemis_attachment_actions" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:gravity="center_vertical">
+                    <androidx.appcompat.widget.AppCompatButton android:id="@+id/artemis_attachment_cancel" style="@style/Widget.ArtemisUI.AttachmentAction"
+                        android:layout_width="wrap_content" android:layout_height="48dp" android:text="@string/artemis_cancel_upload_short" android:contentDescription="@string/artemis_cancel_upload" />
+                    <androidx.appcompat.widget.AppCompatButton android:id="@+id/artemis_attachment_retry" style="@style/Widget.ArtemisUI.AttachmentAction"
+                        android:layout_width="wrap_content" android:layout_height="48dp" android:text="@string/artemis_retry_upload_short" android:contentDescription="@string/artemis_retry_upload" />
+                    <ImageButton android:id="@+id/artemis_attachment_remove" android:layout_width="48dp" android:layout_height="48dp"
+                        android:src="@drawable/artemis_ic_close" app:tint="@color/artemis_muted" android:padding="@dimen/artemis_icon_button_padding" android:scaleType="centerInside"
+                        android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="@string/artemis_remove_attachment" />
+                </LinearLayout>
+            </LinearLayout>
+            <ProgressBar android:id="@+id/artemis_attachment_progress" style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent" android:layout_height="3dp" android:layout_marginStart="12dp" android:layout_marginEnd="12dp"
+                android:layout_marginBottom="8dp" android:progressTint="@color/artemis_primary"
+                android:indeterminateTint="@color/artemis_primary" android:progressBackgroundTint="@color/artemis_border" android:visibility="gone" />
+        </LinearLayout>

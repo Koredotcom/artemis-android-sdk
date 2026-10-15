@@ -8,4 +8,30 @@
     <string name="playing_audio">Playing audio…</string>
     <string name="invalid_audio_link">Invalid audio link</string>
     <string name="play_video">Play video</string>
+    <string name="artemis_attach_file">Attach a file</string>
+    <string name="artemis_cancel_upload">Cancel upload</string>
+    <string name="artemis_retry_upload">Retry upload</string>
+    <string name="artemis_remove_attachment">Remove</string>
+    <string name="artemis_upload_pending">Uploading attachment…</string>
+    <string name="artemis_upload_progress">Uploading attachment… %1$d%%</string>
+    <string name="artemis_upload_failed">Upload failed</string>
+    <string name="artemis_attachment_ready">Ready to send</string>
+    <string name="artemis_attachment_file">Attachment</string>
+    <string name="artemis_open_attachment">Open %1$s</string>
+    <string name="artemis_attachment_not_sent">Attachment not sent to the agent</string>
+    <string name="artemis_cancel_upload_short">Cancel</string>
+    <string name="artemis_retry_upload_short">Retry</string>
+    <string name="artemis_attachment_limit">You can attach up to %1$d files per message. Remove a file or select fewer files.</string>
+    <string name="artemis_attachment_count">Files attached (%1$d/%2$d)</string>
+    <string name="artemis_attachment_queued">Waiting to upload</string>
+    <string name="artemis_attachment_cancelled">Upload cancelled</string>
+    <string name="artemis_attachment_limit_reached">Maximum of %1$d files attached</string>
+    <plurals name="artemis_attachment_group">
+        <item quantity="one">%1$d attachment</item>
+        <item quantity="other">%1$d attachments</item>
+    </plurals>
+    <string name="artemis_show_attachments">Show %1$s</string>
+    <string name="artemis_hide_attachments">Hide %1$s</string>
+    <string name="artemis_attachment_group_failed">%1$s · Some files not sent to the agent</string>
+    <string name="artemis_attachment_type_status">%1$s · %2$s</string>
 </resources>

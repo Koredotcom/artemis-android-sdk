@@ -9,7 +9,9 @@ The SDK uses the Artemis Socket SDK for connection management, streamed assistan
 
 ## Try the sample
 
-Open the project in Android Studio, sync Gradle, and run the `app` configuration. Assign the endpoint, project ID, API key, channel ID, and chat title strings in `MainActivity`, then tap **Open chat**.
+Copy `sample-runtime.local.properties.example` to `sample-runtime.local.properties` and fill in your endpoint, project ID, public SDK key, channel ID, and chat title. The real properties file is ignored by Git. Alternatively, set environment variables `ARTEMIS_SAMPLE_ENDPOINT`, `ARTEMIS_SAMPLE_PROJECT_ID`, `ARTEMIS_SAMPLE_API_KEY`, `ARTEMIS_SAMPLE_CHANNEL_ID`, and `ARTEMIS_SAMPLE_CHAT_TITLE`; these override local properties.
+
+Open the project in Android Studio, sync Gradle, run the `app` configuration, then tap **Open chat**. Without local values, the sample opens with no configured Runtime. These settings are used only by the sample application; the SDK libraries receive configuration from their host.
 
 ## Chat layouts and default templates
 
@@ -50,9 +52,7 @@ Once the `ui-0.0.1` tag has been published successfully on JitPack, add:
 implementation 'com.github.Koredotcom:artemis-android-sdk:ui-0.0.1'
 ```
 
-Only the UI library is published; the sample app is not a Maven artifact. The
-socket dependency is included transitively, so no separate socket dependency is
-required in the host app.
+The UI and socket libraries are published together; the sample app is not a Maven artifact. The socket dependency is included transitively, so no separate socket dependency is required in the host app.
 
 Add the UI artifact to a host app and initialize it with its runtime configuration:
 
@@ -77,7 +77,7 @@ The YAML loader accepts `sdk_configurations.yaml` under the `artemis_ui_sdk` or 
 
 ## Socket dependency status
 
-The current dependency is `com.github.Koredotcom:artemis-android-sdk:socket-0.0.1`, declared in `artemis_ui_sdk/build.gradle`.
+The UI and sample now use local project dependencies so source changes are exercised together: `:app` → `:artemis_ui_sdk` → `:artemis_socket_sdk`. The previous published baseline was `socket:1.0.1` / `ui:1.0.1`. Release both updated modules together before distributing the new SDK. See [steps 1–5 implementation and regression checks](docs/feature-parity-milestone-1.md).
 
 ## Build
 
@@ -89,7 +89,7 @@ The repository targets Android API 24+, compiles against API 36, and uses Java 1
 
 ## JitPack release
 
-`jitpack.yml` selects Java 17 and publishes only `:artemis_ui_sdk`. The publication
+`jitpack.yml` selects Java 17 and stages both `:artemis_socket_sdk` and `:artemis_ui_sdk`. The publication
 version follows JitPack's `VERSION` environment variable, defaulting locally to
 `ui-0.0.1`. The release includes an AAR, dependency metadata, and a sources JAR.
 
@@ -106,3 +106,16 @@ confirm the build succeeds before distributing the dependency coordinate.
 Release lint disables only `NullSafeMutableLiveData` because the Lifecycle 2.9
 detector crashes with AGP 8.7's Kotlin analysis API; this SDK uses StateFlow and
 contains no MutableLiveData. Other release lint checks remain enabled.
+
+## Optional attachments and human-agent chat
+
+The sample enables the attachment and transferred-agent UI. SDK consumers opt in with
+`ArtemisFeatureConfig(attachments = true, contactCenter = true)`; existing defaults keep both disabled.
+The native picker and socket send API allow at most **five files per message**, with per-file progress, cancellation, retry and removal.
+The picker button stays hidden until Runtime branding explicitly enables `widgetConfig.theme.attachmentButtonEnabled` and the session grants `attachment:write`; a socket connection alone does not show it.
+The increment includes streamed uploads with progress/cancel/retry, scoped downloads, transfer text/typing,
+external forms and dedicated post-transfer survey acknowledgements. Agent calls/video/screen sharing remain later work.
+
+Run `bash gradlew verifyParityBaseline` to build, lint and run the complete SDK/sample regression gate.
+See [configuration, behavior and live acceptance scenarios](docs/attachments-contact-center.md), including the
+Runtime replay requirement for surveys missed while offline. Publish both modules at the same release version.

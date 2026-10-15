@@ -1,0 +1,7 @@
+# Copy to sample-runtime.local.properties and supply your own runtime settings.
+# The real file is ignored by Git. Environment variables ARTEMIS_SAMPLE_<KEY> take precedence.
+ENDPOINT=https://runtime.example.com
+PROJECT_ID=your-project-id
+API_KEY=your-public-sdk-key
+CHANNEL_ID=your-channel-id
+CHAT_TITLE=Support

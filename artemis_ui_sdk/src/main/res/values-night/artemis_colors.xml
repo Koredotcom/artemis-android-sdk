@@ -5,4 +5,11 @@
     <color name="artemis_text">#F1F5F9</color>
     <color name="artemis_muted">#94A3B8</color>
     <color name="artemis_border">#334155</color>
+    <color name="artemis_file_pdf">#F87171</color>
+    <color name="artemis_file_word">#93C5FD</color>
+    <color name="artemis_file_image">#5EEAD4</color>
+    <color name="artemis_file_text">#CBD5E1</color>
+    <color name="artemis_file_sheet">#86EFAC</color>
+    <color name="artemis_file_slides">#FDBA74</color>
+    <color name="artemis_file_media">#C4B5FD</color>
 </resources>

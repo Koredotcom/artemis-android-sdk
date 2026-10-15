@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'com.artemis'
-version = System.getenv('VERSION') ?: 'ui-0.0.1'
+version = rootProject.ext.sdkReleaseVersion
 
 android {
     namespace 'com.artemis.uisdk'
@@ -18,6 +18,8 @@ android {
         minSdk 24
         consumerProguardFiles 'consumer-rules.pro'
     }
+
+    testOptions { unitTests.includeAndroidResources = true }
 
     buildTypes {
         release {
@@ -52,7 +54,10 @@ dependencies {
     implementation 'com.google.android.material:material:1.12.0'
     api 'com.google.code.gson:gson:2.10.1'
     implementation 'org.yaml:snakeyaml:2.2'
-    implementation project(':artemis_socket_sdk')
+    api project(':artemis_socket_sdk')
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    testImplementation 'org.robolectric:robolectric:4.16.1'
 }
 
 afterEvaluate {

@@ -1,0 +1,5 @@
+jdk:
+  - openjdk17
+
+install:
+  - bash gradlew :artemis_socket_sdk:publishToMavenLocal :artemis_ui_sdk:publishToMavenLocal --no-daemon --stacktrace

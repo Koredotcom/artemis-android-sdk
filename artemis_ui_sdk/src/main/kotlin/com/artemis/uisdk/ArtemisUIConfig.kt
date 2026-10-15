@@ -6,14 +6,22 @@ import org.yaml.snakeyaml.Yaml
 import org.yaml.snakeyaml.constructor.SafeConstructor
 import java.io.FileNotFoundException
 import java.net.URI
+import com.google.gson.JsonObject
+import artemis.socket.ArtemisSocketConfiguration
 
 /** Connection information required by ArtemisSocketClient. Never log this object. */
-class ArtemisConnectionConfig(
+class ArtemisConnectionConfig @JvmOverloads constructor(
     val endpoint: String,
     val projectId: String,
-    val apiKey: String,
+    val apiKey: String = "",
     val channelId: String? = null,
     val channelName: String? = null,
+    val bootstrapToken: String? = null,
+    val bootstrapTokenProvider: ArtemisSocketConfiguration.BootstrapTokenProvider? = null,
+    val deploymentSlug: String? = null,
+    val userContext: JsonObject? = null,
+    val sessionMetadata: JsonObject? = null,
+    val clientSessionIdentifier: Boolean = false,
 ) {
     override fun toString() = "ArtemisConnectionConfig(endpoint=$endpoint, projectId=$projectId, apiKey=<redacted>)"
 }
@@ -23,14 +31,42 @@ data class ArtemisReconnectionConfig(
     val maxAttempts: Int = 5,
     val baseDelayMs: Long = 1_000,
     val maxDelayMs: Long = 30_000,
+    val unlimitedTransientRetries: Boolean = false,
 )
 
-data class ArtemisFeatureConfig(
+data class ArtemisFeatureConfig @JvmOverloads constructor(
     val markdown: Boolean = true,
     val carousel: Boolean = true,
     val typingIndicator: Boolean = true,
     val timestamps: Boolean = true,
+    val history: Boolean = true,
+    val activityUpdates: Boolean = true,
+    val citations: Boolean = true,
+    val attachments: Boolean = false,
+    val contactCenter: Boolean = false,
 )
+
+/** Client-side policy supplements the Runtime's project policy; it never overrides a server rejection. */
+data class ArtemisAttachmentConfig(
+    val maxFileSizeBytes: Long = 20L * 1024 * 1024,
+    val allowedMimeTypes: Set<String> = setOf(
+        "image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf", "text/plain", "text/csv",
+        "application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "audio/*", "video/*",
+    ),
+) {
+    init {
+        require(maxFileSizeBytes in 1..artemis.socket.ArtemisSocketClient.MAX_ATTACHMENT_BYTES) { "Attachment size must be between 1 byte and 20 MiB" }
+        require(allowedMimeTypes.isNotEmpty() && allowedMimeTypes.all { it.matches(Regex("[a-z0-9!#$&^_.+-]+/(?:[a-z0-9!#$&^_.+-]+|\\*)")) }) { "Specify valid allowed MIME types" }
+    }
+    fun allows(mime: String): Boolean {
+        val value = mime.substringBefore(';').trim().lowercase(java.util.Locale.ROOT)
+        return value in allowedMimeTypes || "${value.substringBefore('/')}/*" in allowedMimeTypes
+    }
+}
 
 data class ArtemisThemeConfig(
     val mode: String = "system",
@@ -41,11 +77,20 @@ data class ArtemisThemeConfig(
     val bubbleRadiusDp: Float = 16f,
 )
 
-class ArtemisUIConfig(
+data class ArtemisSessionConfig(
+    val idleDisconnectTimeoutMs: Long = 0,
+    val endSessionOnIdle: Boolean = false,
+    val staleSessionRefreshMs: Long = 0,
+    val endSessionOnClose: Boolean = false,
+)
+
+class ArtemisUIConfig @JvmOverloads constructor(
     val connection: ArtemisConnectionConfig,
     val reconnection: ArtemisReconnectionConfig = ArtemisReconnectionConfig(),
     val features: ArtemisFeatureConfig = ArtemisFeatureConfig(),
     val theme: ArtemisThemeConfig = ArtemisThemeConfig(),
+    val session: ArtemisSessionConfig = ArtemisSessionConfig(),
+    val attachment: ArtemisAttachmentConfig = ArtemisAttachmentConfig(),
 ) {
     init {
         val uri = runCatching { URI(connection.endpoint) }.getOrNull()
@@ -53,10 +98,14 @@ class ArtemisUIConfig(
             "connection.endpoint must be an absolute HTTP(S) URL"
         }
         require(connection.projectId.isNotBlank()) { "connection.projectId is required" }
-        require(connection.apiKey.isNotBlank()) { "connection.apiKey is required" }
-        require(!connection.channelId.isNullOrBlank() || !connection.channelName.isNullOrBlank()) {
-            "connection.channelId or connection.channelName is required"
-        }
+        // Keep validation identical to the actual transport, including credential exclusivity.
+        ArtemisSocketConfiguration.builder().endpoint(connection.endpoint).projectId(connection.projectId)
+            .apiKey(connection.apiKey).channelId(connection.channelId).channelName(connection.channelName)
+            .bootstrapToken(connection.bootstrapToken).bootstrapTokenProvider(connection.bootstrapTokenProvider)
+            .deploymentSlug(connection.deploymentSlug).userContext(connection.userContext)
+            .sessionMetadata(connection.sessionMetadata)
+            .clientSessionIdentifier(if (connection.clientSessionIdentifier) "validation" else null).build()
+        require(session.idleDisconnectTimeoutMs >= 0 && session.staleSessionRefreshMs >= 0) { "Invalid session timeouts" }
         require(reconnection.maxAttempts in 0..30) { "reconnection.maxAttempts must be between 0 and 30" }
         require(reconnection.baseDelayMs >= 0 && reconnection.maxDelayMs >= reconnection.baseDelayMs) {
             "Invalid reconnection delays"
@@ -100,9 +149,6 @@ object ArtemisConfigLoader {
         val chat = configurationRoot.nestedMap("chat")
         val theme = configurationRoot.nestedMap("theme")
         val apiKey = connection.readString("api_key")
-        require(connection.readString("bootstrap_token").isNullOrBlank()) {
-            "bootstrap_token is not supported by the configured Android Socket SDK"
-        }
         return ArtemisUIConfig(
             connection = ArtemisConnectionConfig(
                 endpoint = connection.readString("endpoint").orEmpty(),
@@ -110,19 +156,46 @@ object ArtemisConfigLoader {
                 apiKey = apiKey.orEmpty(),
                 channelId = channel.readString("channel_id") ?: connection.readString("channel_id"),
                 channelName = channel.readString("channel_name") ?: connection.readString("channel_name"),
+                bootstrapToken = connection.readString("bootstrap_token"),
+                deploymentSlug = connection.readString("deployment_slug"),
+                clientSessionIdentifier = connection.readBoolean("client_session_identifier", false),
+                userContext = (connection["user_context"] as? Map<*, *>)?.let { com.google.gson.Gson().toJsonTree(it).asJsonObject },
+                sessionMetadata = (connection["session_metadata"] as? Map<*, *>)?.let { com.google.gson.Gson().toJsonTree(it).asJsonObject },
             ),
             reconnection = ArtemisReconnectionConfig(
                 enabled = reconnection.readBoolean("enabled", true),
                 maxAttempts = reconnection.readInteger("max_attempts", 5),
                 baseDelayMs = reconnection.readLong("base_delay_ms", 1_000),
                 maxDelayMs = reconnection.readLong("max_delay_ms", 30_000),
+                unlimitedTransientRetries = reconnection.readBoolean("unlimited_transient_retries", false),
             ),
             features = ArtemisFeatureConfig(
                 markdown = features.readBoolean("enable_markdown", true),
                 carousel = features.readBoolean("enable_carousel", true),
                 typingIndicator = chat.readBoolean("enable_typing_indicator", true),
                 timestamps = configurationRoot.readBoolean("timestamps", true),
+                history = features.readBoolean("enable_history", true),
+                activityUpdates = features.readBoolean("enable_activity_updates", true),
+                citations = features.readBoolean("enable_citations", true),
+                attachments = features.readBoolean("enable_attachments", false),
+                contactCenter = features.readBoolean("enable_contact_center", false),
             ),
+            attachment = configurationRoot.nestedMap("attachments").let { options ->
+                ArtemisAttachmentConfig(
+                    maxFileSizeBytes = options.readLong("max_file_size_bytes", 20L * 1024 * 1024),
+                    allowedMimeTypes = if (options.containsKey("allowed_mime_types")) {
+                        val types = options["allowed_mime_types"] as? List<*> ?: error("allowed_mime_types must be a list")
+                        require(types.all { it is String }) { "allowed_mime_types must contain strings" }
+                        types.filterIsInstance<String>().toSet()
+                    } else ArtemisAttachmentConfig().allowedMimeTypes,
+                )
+            },
+            session = configurationRoot.nestedMap("session").let { session -> ArtemisSessionConfig(
+                idleDisconnectTimeoutMs = session.readLong("idle_disconnect_timeout_ms", 0),
+                endSessionOnIdle = session.readBoolean("end_session_on_idle", false),
+                staleSessionRefreshMs = session.readLong("stale_session_refresh_ms", 0),
+                endSessionOnClose = session.readBoolean("end_session_on_close", false),
+            ) },
             theme = ArtemisThemeConfig(
                 mode = if (theme.readBoolean("dark_mode", false)) "dark" else theme.readString("mode") ?: "system",
                 primary = theme.readString("primary_color") ?: "#2563EB",

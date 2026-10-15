@@ -1,0 +1,5 @@
+<resources>
+    <style name="Theme.ArtemisUI" parent="Theme.ArtemisUI.Base">
+        <item name="android:windowLightNavigationBar">@bool/artemis_light_navigation</item>
+    </style>
+</resources>

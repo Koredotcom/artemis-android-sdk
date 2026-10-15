@@ -39,7 +39,9 @@ class TemplatePreviewActivity : AppCompatActivity() {
         findViewById<View>(R.id.artemis_empty).visibility = View.GONE
         findViewById<View>(R.id.artemis_close).setOnClickListener { finish() }
         findViewById<View>(R.id.artemis_minimize).setOnClickListener { finish() }
-        val chatMessageAdapter = ChatMessageAdapter(ArtemisFeatureConfig(), ArtemisThemeConfig(),
+        val contactCenterPreview = intent.getBooleanExtra("contactCenter", false)
+        val drafts = mutableMapOf<String, SurveyDraft>()
+        val chatMessageAdapter = ChatMessageAdapter(ArtemisFeatureConfig(attachments = contactCenterPreview, contactCenter = contactCenterPreview), ArtemisThemeConfig(),
             object : ChatMessageAdapter.Callbacks {
                 override fun onAction(message: ChatMessage, actionIdentifier: String, actionValue: String?, formData: Map<String, String>?, renderIdentifier: String?) {
                     Toast.makeText(this@TemplatePreviewActivity, "Preview action: $actionIdentifier", Toast.LENGTH_SHORT).show()
@@ -47,10 +49,21 @@ class TemplatePreviewActivity : AppCompatActivity() {
                 override fun onFeedback(message: ChatMessage, feedbackType: String, rating: Int, feedbackText: String?) {
                     Toast.makeText(this@TemplatePreviewActivity, "Preview rating: $rating", Toast.LENGTH_SHORT).show()
                 }
+                override fun onAttachment(message: ChatMessage, attachment: AttachmentRef) {
+                    Toast.makeText(this@TemplatePreviewActivity, "Offline preview: ${attachment.filename}", Toast.LENGTH_SHORT).show()
+                }
+                override fun surveyDraft(message: ChatMessage) = drafts[message.messageId] ?: SurveyDraft()
+                override fun onSurveyDraft(message: ChatMessage, draft: SurveyDraft) { drafts[message.messageId] = draft }
+                override fun onTransferSurvey(message: ChatMessage, score: Int, comments: String?) {
+                    Toast.makeText(this@TemplatePreviewActivity, "Offline preview rating: $score", Toast.LENGTH_SHORT).show()
+                }
                 override fun isLocked(message: ChatMessage, actionIdentifier: String) = false
             })
         val chatMessagesRecyclerView = findViewById<RecyclerView>(R.id.artemis_messages)
         chatMessagesRecyclerView.layoutManager = LinearLayoutManager(this)
+        chatMessagesRecyclerView.itemAnimator = null
+        chatMessagesRecyclerView.setItemViewCacheSize(6)
+        chatMessagesRecyclerView.setHasFixedSize(true)
         chatMessagesRecyclerView.adapter = chatMessageAdapter
         val richContentExamples = listOf(
             """{"quick_replies":[{"id":"orders","label":"Track my order"},{"id":"products","label":"Explore products"},{"id":"help","label":"Talk to support"}]}""",
@@ -81,6 +94,20 @@ class TemplatePreviewActivity : AppCompatActivity() {
         previewMessages += richContentExamples.mapIndexed { exampleIndex, exampleJson ->
             ChatMessage("template-$exampleIndex", serverMessageId = "preview-$exampleIndex", role = MessageRole.ASSISTANT,
                 text = "", richContent = JsonParser.parseString(exampleJson).asJsonObject)
+        }
+        if (contactCenterPreview) {
+            findViewById<TextView>(R.id.artemis_status).text = "Human-agent preview · Offline"
+            previewMessages.clear()
+            previewMessages += listOf(
+                ChatMessage("queue", role = MessageRole.SYSTEM, text = "Waiting for a human agent…"),
+                ChatMessage("connected", role = MessageRole.SYSTEM, text = "Connected to a human agent."),
+                ChatMessage("agent", role = MessageRole.ASSISTANT, text = "Hello, I can help with your request."),
+                ChatMessage("attachment", role = MessageRole.ASSISTANT, text = "Your document", attachments = listOf(AttachmentRef("offline-file", "confirmation.pdf", "application/pdf", 12345))),
+                ChatMessage("failed-file", role = MessageRole.USER, text = "", attachments = listOf(AttachmentRef("failed", "report.pdf", deliveryFailed = true))),
+                ChatMessage("form", role = MessageRole.ASSISTANT, text = "Please complete this secure form.", agentLink = AgentLink("https://example.com/form", "Open form", AgentLinkKind.FORM)),
+                ChatMessage("survey", role = MessageRole.ASSISTANT, text = "How was your support experience?", transferSurvey = AgentTransferSurvey("nps", "offline-transfer", commentVisibility = "conditional", commentRatings = listOf(0,1,2,3,4,5,6))),
+                ChatMessage("survey-done", role = MessageRole.ASSISTANT, text = "Support feedback", transferSurvey = AgentTransferSurvey("csat", "offline-done", status = SurveySubmissionStatus.SUBMITTED)),
+            )
         }
         chatMessageAdapter.submitList(previewMessages.toList()) {
             chatMessagesRecyclerView.scrollToPosition(intent.getIntExtra("position", 0).coerceIn(0, previewMessages.lastIndex))

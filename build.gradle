@@ -3,3 +3,17 @@ plugins {
     id 'com.android.library' version '8.7.3' apply false
     id 'org.jetbrains.kotlin.android' version '1.9.0' apply false
 }
+
+// One version owns both artifacts; a UI release cannot silently select another socket build.
+ext.sdkReleaseVersion = System.getenv('VERSION') ?: 'ui-0.0.1'
+
+tasks.register('verifyParityBaseline') {
+    group = 'verification'
+    description = 'Build, lint and run the SDK and sample regression suites together.'
+    dependsOn ':artemis_socket_sdk:testDebugUnitTest', ':artemis_ui_sdk:testDebugUnitTest', ':app:testDebugUnitTest',
+        ':artemis_socket_sdk:assembleRelease', ':artemis_ui_sdk:assembleRelease', ':app:assembleDebug',
+        ':artemis_socket_sdk:lintRelease', ':artemis_ui_sdk:lintRelease'
+    doLast {
+        assert project(':artemis_ui_sdk').version == project(':artemis_socket_sdk').version : 'UI/socket versions must match'
+    }
+}

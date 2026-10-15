@@ -6,3 +6,25 @@
 /build
 /captures
 /app/raw
+
+# Generated Android artifacts and local tooling state
+**/build/
+**/.cxx/
+**/.externalNativeBuild/
+*.apk
+*.aab
+*.aar
+*.dex
+*.hprof
+*.log
+
+# Local runtime, service credentials, and signing material
+/sample-runtime.local.properties
+**/github.properties
+**/google-services.json
+**/key.properties
+*.jks
+*.keystore
+.env
+.env.*
+!.env.example

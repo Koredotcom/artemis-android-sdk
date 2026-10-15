@@ -6,4 +6,11 @@
     <color name="artemis_text">#1E293B</color>
     <color name="artemis_muted">#64748B</color>
     <color name="artemis_border">#E2E8F0</color>
+    <color name="artemis_file_pdf">#DC2626</color>
+    <color name="artemis_file_word">#2563EB</color>
+    <color name="artemis_file_image">#0F766E</color>
+    <color name="artemis_file_text">#64748B</color>
+    <color name="artemis_file_sheet">#15803D</color>
+    <color name="artemis_file_slides">#C2410C</color>
+    <color name="artemis_file_media">#7C3AED</color>
 </resources>
