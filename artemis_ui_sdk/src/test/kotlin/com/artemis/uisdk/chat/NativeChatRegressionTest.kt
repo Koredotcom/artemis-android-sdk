@@ -66,7 +66,9 @@ class NativeChatRegressionTest {
             android.view.View.MeasureSpec.makeMeasureSpec(0,android.view.View.MeasureSpec.UNSPECIFIED))
         val card=parent.getChildAt(0) as LinearLayout
         val row=card.getChildAt(0) as LinearLayout
-        assertTrue("Filename must have width next to Open", row.getChildAt(0).measuredWidth > width/3)
+        val filename = (0 until row.childCount).map(row::getChildAt).filterIsInstance<android.widget.TextView>()
+            .single { it.text.toString() == "TravelDesk-dev-ticket.pdf" }
+        assertTrue("Filename must have width next to Open", filename.measuredWidth > width/3)
         assertTrue("File card must remain compact", parent.measuredHeight < 180*context.resources.displayMetrics.density)
         renderer.clearCaches()
     }

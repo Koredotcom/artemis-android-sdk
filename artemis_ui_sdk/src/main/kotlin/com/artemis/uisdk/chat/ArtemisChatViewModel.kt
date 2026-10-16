@@ -32,14 +32,21 @@ class ArtemisChatViewModel internal constructor(
     private companion object {
         const val RESPONSE_LOG_TAG = "ArtemisUI"
         const val RESPONSE_LOG_CHUNK_SIZE = 3000
-        const val ATTACHMENTS_DISABLED_MESSAGE = "Attachments are disabled for this chat. Remove the selected files to send text."
     }
 
+    private fun label(id: Int, vararg args: Any) = artemisUiHandle.text(id, *args)
+    private var lastAttachmentPolicyError: String? = null
+    private val attachmentsDisabledMessage get() = label(com.artemis.uisdk.R.string.artemis_attachments_disabled).also { lastAttachmentPolicyError = it }
     private val mainThreadHandler = Handler(Looper.getMainLooper())
     private val gsonSerializer = Gson()
     private val mutableChatUiState = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = mutableChatUiState.asStateFlow()
-    private val transcript = ChatTranscript(artemisUiHandle.config.features.contactCenter, artemisUiHandle.config.features.attachments)
+    private val transcript = ChatTranscript(artemisUiHandle.config.features.contactCenter, artemisUiHandle.config.features.attachments, artemisUiHandle.config.features.authentication)
+    private val authorizationRequests = mutableMapOf<String, com.artemis.uisdk.ArtemisAuthorizationRequest>()
+    private val authorizationOperations = mutableMapOf<Pair<String, String>, String>()
+    private val authorizationTimeouts = mutableMapOf<Pair<String, String>, Runnable>()
+    private var browserAuthorization: com.artemis.uisdk.ArtemisAuthorizationRequest? = null
+    private var authorizationBrowserWasAway = false
     private val attachmentMetadataExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val ownedAttachmentGrants = mutableSetOf<android.net.Uri>()
     private class AttachmentSelection(val uri: android.net.Uri, val sessionId: String, var draft: AttachmentDraft, var revision: Int = 0)
@@ -48,6 +55,9 @@ class ArtemisChatViewModel internal constructor(
     private var activeAttachmentId: String? = null
     private var activeAttachmentUpload: artemis.socket.ArtemisAttachmentUpload? = null
     private var historyTransferRevision = 0L
+    private val templateDrafts = linkedMapOf<String, Pair<JsonObject, Map<String, String>>>()
+    private val feedbackDrafts = linkedMapOf<String, Pair<JsonObject, FeedbackDraft>>()
+    private val feedbackOperations = mutableMapOf<String, String>()
     private val surveyDrafts = linkedMapOf<String, SurveyDraft>()
     private val lockedActionKeys = mutableSetOf<String>()
     private var artemisSocketClient: ArtemisSocketClient? = null
@@ -93,7 +103,7 @@ class ArtemisChatViewModel internal constructor(
             artemisUiHandle.emit(ArtemisUiEvent.ConnectionChanged("CONNECTING"))
             artemisSocketClient?.connect()
         } catch (error: RuntimeException) {
-            fail("CONFIGURATION", error.message ?: "Invalid connection configuration", false)
+            fail("CONFIGURATION", error.message ?: label(com.artemis.uisdk.R.string.artemis_invalid_configuration), false)
         }
     }
 
@@ -111,8 +121,8 @@ class ArtemisChatViewModel internal constructor(
             artemisUiHandle.emit(ArtemisUiEvent.MessageChanged(id, "user"))
             return true
         } catch (error: RuntimeException) {
-            setState(mutableChatUiState.value.copy(errorMessage = "Message could not be sent. Retry when connected."))
-            artemisUiHandle.emit(ArtemisUiEvent.Error("SEND_REJECTED", "Message could not be sent", true))
+            setState(mutableChatUiState.value.copy(errorMessage = label(com.artemis.uisdk.R.string.artemis_send_failed)))
+            artemisUiHandle.emit(ArtemisUiEvent.Error("SEND_REJECTED", label(com.artemis.uisdk.R.string.artemis_message_rejected), true))
             return false
         }
     }
@@ -129,7 +139,7 @@ class ArtemisChatViewModel internal constructor(
         val survey = message.transferSurvey ?: return
         if (!survey.validScore(score) || score !in survey.choices || survey.status in setOf(SurveySubmissionStatus.PENDING, SurveySubmissionStatus.SUBMITTED)) return
         val client = artemisSocketClient ?: return
-        if (!client.isConnected || state.value.isOffline) { contactCenterError("Reconnect to submit your feedback."); return }
+        if (!client.isConnected || state.value.isOffline) { contactCenterError(label(com.artemis.uisdk.R.string.artemis_feedback_reconnect)); return }
         val session = state.value.sessionId
         updateMessage(messageId) { it.copy(transferSurvey = survey.copy(status = SurveySubmissionStatus.PENDING)) }
         try {
@@ -143,7 +153,7 @@ class ArtemisChatViewModel internal constructor(
                     override fun onFailure(code: String, message: String) {
                         if (isClosed || state.value.sessionId != session) return
                         updateMessage(messageId) { it.copy(transferSurvey = survey.copy(status = SurveySubmissionStatus.FAILED)) }
-                        artemisUiHandle.emit(ArtemisUiEvent.Error(code, "Survey could not be submitted. Please retry.", true))
+                        artemisUiHandle.emit(ArtemisUiEvent.Error(code, label(com.artemis.uisdk.R.string.artemis_survey_rejected), true))
                     }
                 })
         } catch (error: RuntimeException) {
@@ -170,7 +180,7 @@ class ArtemisChatViewModel internal constructor(
         if (isClosed || !attachmentsEnabled || !client.isConnected || state.value.isOffline) return
         val additions = uris.distinct().filter { uri -> attachmentSelections.values.none { it.uri == uri } }
         if (attachmentSelections.size + additions.size > maxAttachmentsPerMessage) {
-            val message = artemisUiHandle.appContext.getString(com.artemis.uisdk.R.string.artemis_attachment_limit, maxAttachmentsPerMessage)
+            val message = label(com.artemis.uisdk.R.string.artemis_attachment_limit, maxAttachmentsPerMessage)
             setState(state.value.copy(errorMessage = message))
             artemisUiHandle.emit(ArtemisUiEvent.Error("ATTACHMENT_LIMIT", message, false))
             return
@@ -234,8 +244,8 @@ class ArtemisChatViewModel internal constructor(
                     if (currentAttachment(id, item, operation)) { item.draft = item.draft.copy(attachment = info); publishAttachmentState() }
                 }
                 val policy = artemisUiHandle.config.attachment
-                require(policy.allows(mime)) { "This file type is not allowed. Select a supported file." }
-                require(size != 0L && size <= policy.maxFileSizeBytes && size >= -1) { "File is empty or exceeds the configured size limit." }
+                require(policy.allows(mime)) { label(com.artemis.uisdk.R.string.artemis_file_type_rejected) }
+                require(size != 0L && size <= policy.maxFileSizeBytes && size >= -1) { label(com.artemis.uisdk.R.string.artemis_file_size_rejected) }
                 mainThreadHandler.post {
                     if (!currentAttachment(id, item, operation)) { releaseAttachmentGrants(); return@post }
                     try {
@@ -248,7 +258,7 @@ class ArtemisChatViewModel internal constructor(
                                 }
                                 override fun onSuccess(attachmentId: String, sessionId: String) {
                                     if (!currentAttachment(id, item, operation)) return
-                                    if (sessionId != item.sessionId) { failAttachment(id, item, operation, "SESSION_CHANGED", "Conversation changed. Please attach the file again."); return }
+                                    if (sessionId != item.sessionId) { failAttachment(id, item, operation, "SESSION_CHANGED", label(com.artemis.uisdk.R.string.artemis_attachment_session_changed)); return }
                                     activeAttachmentUpload = null; activeAttachmentId = null
                                     item.draft = item.draft.copy(attachment = info.copy(id = attachmentId), status = AttachmentDraftStatus.READY, progress = 100)
                                     publishAttachmentState()
@@ -257,10 +267,10 @@ class ArtemisChatViewModel internal constructor(
                                 }
                                 override fun onFailure(code: String, message: String) = failAttachment(id, item, operation, code, message)
                             })
-                    } catch (error: RuntimeException) { failAttachment(id, item, operation, "UPLOAD_FAILED", "File could not be uploaded. Please retry.") }
+                    } catch (error: RuntimeException) { failAttachment(id, item, operation, "UPLOAD_FAILED", label(com.artemis.uisdk.R.string.artemis_upload_rejected)) }
                 }
             } catch (error: Exception) {
-                val message = if (error is IllegalArgumentException) error.message ?: "Invalid attachment" else "File could not be read. Please select it again."
+                val message = if (error is IllegalArgumentException) error.message ?: label(com.artemis.uisdk.R.string.artemis_invalid_attachment) else label(com.artemis.uisdk.R.string.artemis_file_unreadable)
                 mainThreadHandler.post { failAttachment(id, item, operation, "UPLOAD_FAILED", message) }
             }
         }
@@ -342,7 +352,7 @@ class ArtemisChatViewModel internal constructor(
         if (value.codePointCount(0, value.length) > 10_000) return false
         val client = artemisSocketClient ?: return false
         if (!client.isConnected || state.value.isOffline) return false
-        if (selected.any { it.sessionId != state.value.sessionId }) { removePendingAttachment(); contactCenterError("Conversation changed. Please attach the files again."); return false }
+        if (selected.any { it.sessionId != state.value.sessionId }) { removePendingAttachment(); contactCenterError(label(com.artemis.uisdk.R.string.artemis_attachments_session_changed)); return false }
         val attachments = selected.map { it.draft.attachment }
         val id = UUID.randomUUID().toString()
         val metadata = AttachmentMime.metadata(attachments)
@@ -355,7 +365,7 @@ class ArtemisChatViewModel internal constructor(
             removePendingAttachment(); composerDraft = ""
             artemisUiHandle.emit(ArtemisUiEvent.MessageChanged(id, "user"))
             return true
-        } catch (error: RuntimeException) { contactCenterError("Message could not be sent. Your attachments are ready to retry."); return false }
+        } catch (error: RuntimeException) { contactCenterError(label(com.artemis.uisdk.R.string.artemis_attachment_send_failed)); return false }
     }
 
     fun openAttachment(attachment: AttachmentRef, onResolved: (String) -> Unit) {
@@ -368,7 +378,7 @@ class ArtemisChatViewModel internal constructor(
                 override fun onSuccess(url: String) { if (!isClosed && state.value.sessionId == owningSession) onResolved(url) }
                 override fun onFailure(code: String, message: String) { if (!isClosed && state.value.sessionId == owningSession) contactCenterError(message) }
             })
-        } catch (error: RuntimeException) { contactCenterError("Reconnect to open this attachment.") }
+        } catch (error: RuntimeException) { contactCenterError(label(com.artemis.uisdk.R.string.artemis_attachment_reconnect)) }
     }
 
     fun contactCenterError(message: String) {
@@ -377,6 +387,111 @@ class ArtemisChatViewModel internal constructor(
     }
 
     fun markActivity() { artemisSocketClient?.markActivity() }
+
+    private fun authorizationRow(messageId: String, rowId: String): Pair<AuthorizationCard, AuthorizationRow>? {
+        if (isClosed || artemisUiHandle.isClosed() || !artemisUiHandle.config.features.authentication) return null
+        val card = state.value.messages.find { it.messageId == messageId }?.authorization
+            ?.takeIf { it.active && it.sessionId == state.value.sessionId } ?: return null
+        return card.rows.find { it.id == rowId }?.let { card to it }
+    }
+
+    private fun authorizationStatus(messageId: String, rowId: String, status: AuthorizationStatus, attempted: Boolean = true) {
+        updateMessage(messageId) { m -> m.copy(authorization = m.authorization?.let { card ->
+            card.copy(rows = card.rows.map { if (it.id == rowId && it.status !in setOf(AuthorizationStatus.CONNECTED, AuthorizationStatus.CANCELLED)) it.copy(status = status, attempted = attempted) else it })
+        }) }
+    }
+
+    fun beginAuthorization(messageId: String, rowId: String): com.artemis.uisdk.ArtemisAuthorizationRequest? {
+        val (card, row) = authorizationRow(messageId, rowId) ?: return null
+        if (state.value.connectionStatus != ConnectionStatus.CONNECTED || state.value.isOffline || authorizationRequests.size >= 50 || authorizationOperations.size >= 100 ||
+            row.status !in setOf(AuthorizationStatus.PENDING, AuthorizationStatus.FAILED)) return null
+        val url = AuthorizationContracts.url(row.authUrl) ?: return null
+        val request = com.artemis.uisdk.ArtemisAuthorizationRequest(UUID.randomUUID().toString(), card.sessionId, messageId, rowId, row.label, url)
+        authorizationRequests[request.requestId] = request
+        authorizationOperations[messageId to rowId] = request.requestId
+        authorizationStatus(messageId, rowId, AuthorizationStatus.AUTHORIZING)
+        return request
+    }
+
+    fun completeAuthorization(request: com.artemis.uisdk.ArtemisAuthorizationRequest, result: com.artemis.uisdk.ArtemisAuthorizationResult) {
+        if (authorizationRequests[request.requestId] !== request) return
+        authorizationRequests.remove(request.requestId)
+        if (browserAuthorization === request) { browserAuthorization = null; authorizationBrowserWasAway = false }
+        val key = request.messageId to request.rowId
+        if (authorizationOperations[key] != request.requestId || request.sessionId != state.value.sessionId ||
+            authorizationRow(request.messageId, request.rowId)?.second?.status != AuthorizationStatus.AUTHORIZING) return
+        authorizationOperations.remove(key)
+        when (result) {
+            com.artemis.uisdk.ArtemisAuthorizationResult.COMPLETED -> verifyAuthorization(request.messageId, request.rowId)
+            com.artemis.uisdk.ArtemisAuthorizationResult.DISMISSED -> authorizationStatus(request.messageId, request.rowId, AuthorizationStatus.PENDING)
+            com.artemis.uisdk.ArtemisAuthorizationResult.FAILED -> authorizationStatus(request.messageId, request.rowId, AuthorizationStatus.FAILED)
+        }
+    }
+
+    internal fun trackAuthorizationBrowser(request: com.artemis.uisdk.ArtemisAuthorizationRequest) {
+        browserAuthorization = request; authorizationBrowserWasAway = false
+    }
+    internal fun authorizationBrowserDeparted() { if (browserAuthorization != null) authorizationBrowserWasAway = true }
+    internal fun authorizationBrowserReturned() {
+        if (authorizationBrowserWasAway) browserAuthorization?.let { completeAuthorization(it, com.artemis.uisdk.ArtemisAuthorizationResult.DISMISSED) }
+    }
+
+    fun verifyAuthorization(messageId: String, rowId: String) = sendAuthorizationResponse(messageId, rowId, false)
+    fun cancelAuthorization(messageId: String, rowId: String) = sendAuthorizationResponse(messageId, rowId, true)
+
+    private fun sendAuthorizationResponse(messageId: String, rowId: String, cancelled: Boolean) {
+        val (card, row) = authorizationRow(messageId, rowId) ?: return
+        if (row.status in setOf(AuthorizationStatus.CONNECTED, AuthorizationStatus.CANCELLED, AuthorizationStatus.VERIFYING, AuthorizationStatus.CANCELLING) ||
+            cancelled && !row.canCancel) return
+        val key = messageId to rowId
+        if (authorizationOperations.size >= 100 && key !in authorizationOperations) return
+        authorizationTimeouts.remove(key)?.let(mainThreadHandler::removeCallbacks)
+        authorizationRequests.entries.removeAll { it.value.messageId == messageId && it.value.rowId == rowId }
+        if (browserAuthorization?.let { it.messageId == messageId && it.rowId == rowId } == true) browserAuthorization = null
+        val operation = UUID.randomUUID().toString()
+        authorizationOperations[key] = operation
+        try {
+            val client = artemisSocketClient ?: throw IllegalStateException("Disconnected")
+            check(state.value.connectionStatus == ConnectionStatus.CONNECTED && !state.value.isOffline)
+            if (card.kind == AuthorizationKind.CHALLENGE || row.canCancel) {
+                client.respondToAuthorization(card.sessionId, row.id, if (cancelled) "cancelled" else "completed")
+            }
+            if (!cancelled && card.kind == AuthorizationKind.PREFLIGHT) {
+                client.recheckAuthorization(card.sessionId, row.authProfileRef ?: throw IllegalStateException("Missing requirement"), row.id)
+            }
+            authorizationStatus(messageId, rowId, if (cancelled) AuthorizationStatus.CANCELLING else AuthorizationStatus.VERIFYING)
+            // A local waiting timeout enables explicit retry. It never cancels/resumes a workflow.
+            val timeout = Runnable {
+                authorizationTimeouts.remove(key)
+                if (!isClosed && authorizationOperations[key] == operation && state.value.sessionId == card.sessionId) {
+                    authorizationOperations.remove(key)
+                    authorizationStatus(messageId, rowId, AuthorizationStatus.FAILED)
+                }
+            }
+            authorizationTimeouts[key] = timeout
+            mainThreadHandler.postDelayed(timeout, 30_000)
+        } catch (_: RuntimeException) {
+            authorizationOperations.remove(key)
+            authorizationStatus(messageId, rowId, AuthorizationStatus.FAILED)
+        }
+    }
+
+    private fun pruneAuthorizationOperations() {
+        authorizationOperations.keys.toList().forEach { key ->
+            val row = authorizationRow(key.first, key.second)?.second
+            if (row == null || row.status !in setOf(AuthorizationStatus.AUTHORIZING, AuthorizationStatus.VERIFYING, AuthorizationStatus.CANCELLING)) {
+                authorizationOperations.remove(key)
+                authorizationTimeouts.remove(key)?.let(mainThreadHandler::removeCallbacks)
+            }
+        }
+        authorizationRequests.entries.removeAll { (id, request) -> authorizationOperations[request.messageId to request.rowId] != id }
+        if (browserAuthorization?.requestId !in authorizationRequests.keys) { browserAuthorization = null; authorizationBrowserWasAway = false }
+    }
+
+    private fun clearAuthorizationOperations() {
+        authorizationTimeouts.values.forEach(mainThreadHandler::removeCallbacks); authorizationTimeouts.clear()
+        authorizationRequests.clear(); authorizationOperations.clear(); browserAuthorization = null; authorizationBrowserWasAway = false
+    }
 
     fun sendPresence(typing: Boolean) { artemisSocketClient?.sendPresence(typing) }
 
@@ -387,11 +502,11 @@ class ArtemisChatViewModel internal constructor(
         formData: Map<String, String>?,
         renderIdentifier: String?,
     ) {
-        if (mutableChatUiState.value.connectionStatus != ConnectionStatus.CONNECTED || mutableChatUiState.value.isOffline) return
-        val sourceMessage = mutableChatUiState.value.messages.find { it.messageId == messageId }
-        val isQuickReply = sourceMessage?.richContent?.array("quick_replies")?.any { it.isJsonObject && it.asJsonObject.string("id") == actionIdentifier } == true
+        if (isClosed || mutableChatUiState.value.connectionStatus != ConnectionStatus.CONNECTED || mutableChatUiState.value.isOffline) return
+        val sourceMessage = mutableChatUiState.value.messages.find { it.messageId == messageId } ?: return
+        val isQuickReply = sourceMessage?.let { templatePayloads(it, "quick_replies").any { replies -> replies.takeIf { it.isJsonArray }?.asJsonArray?.any { it.isJsonObject && it.asJsonObject.string("id") == actionIdentifier } == true } } == true
         val actionLockKey = renderIdentifier?.let { "render:$it" } ?: "$messageId:${if (isQuickReply) "quick_replies" else actionIdentifier}"
-        val displayLabel = actionDisplayLabel(sourceMessage, actionIdentifier)
+        val displayLabel = if (formData == null) actionDisplayLabel(sourceMessage, actionIdentifier) else null
         val displayId = if (displayLabel != null) UUID.randomUUID().toString() else null
         if (!lockedActionKeys.add(actionLockKey)) return
         try {
@@ -409,47 +524,132 @@ class ArtemisChatViewModel internal constructor(
         } catch (error: RuntimeException) {
             lockedActionKeys.remove(actionLockKey)
             updateMessage(messageId) { it.copy(presentationVersion = it.presentationVersion + 1) }
-            setState(mutableChatUiState.value.copy(errorMessage = error.message ?: "Action could not be sent"))
-            artemisUiHandle.emit(ArtemisUiEvent.Error("SEND_REJECTED", "Action could not be sent", true))
+            setState(mutableChatUiState.value.copy(errorMessage = error.message ?: label(com.artemis.uisdk.R.string.artemis_action_rejected)))
+            artemisUiHandle.emit(ArtemisUiEvent.Error("SEND_REJECTED", label(com.artemis.uisdk.R.string.artemis_action_rejected), true))
         }
     }
 
+    internal fun templateDraft(message: ChatMessage, renderId: String?, scope: String, signature: JsonObject): Map<String, String> =
+        templateDrafts[TemplateContracts.draftKey(message, renderId, scope)]?.takeIf { it.first == signature }?.second.orEmpty()
+    internal fun updateTemplateDraft(message: ChatMessage, renderId: String?, scope: String, signature: JsonObject, values: Map<String, String>) {
+        if (isClosed || state.value.messages.none { it.messageId == message.messageId || it.serverMessageId == message.serverMessageId && message.serverMessageId != null }) return
+        templateDrafts[TemplateContracts.draftKey(message, renderId, scope)] = signature.deepCopy() to values.mapValues { it.value.take(10_000) }
+        while (templateDrafts.size > 64) templateDrafts.remove(templateDrafts.keys.first())
+    }
+
+    private fun feedbackMessage(id: String) = state.value.messages.find { it.messageId == id || it.serverMessageId == id }
+
+    internal fun feedbackState(message: ChatMessage, data: JsonObject): FeedbackResponseState {
+        val current = feedbackMessage(message.messageId) ?: message
+        val renderId = FeedbackContracts.renderId(current, data)
+        val response = current.feedbackResponses[renderId.orEmpty()] ?: FeedbackResponseState()
+        val draft = feedbackDrafts[FeedbackContracts.key(current, renderId)]?.takeIf { it.first == data }?.second ?: response.draft
+        return response.copy(draft = FeedbackContracts.parse(data)?.normalized(draft) ?: draft)
+    }
+
+    internal fun updateFeedbackDraft(message: ChatMessage, data: JsonObject, value: FeedbackDraft) {
+        val current = feedbackMessage(message.messageId) ?: return
+        val template = FeedbackContracts.parse(data) ?: return
+        val renderId = FeedbackContracts.renderId(current, data)
+        if (current.feedbackResponses[renderId.orEmpty()]?.status in setOf(FeedbackSubmissionStatus.PENDING, FeedbackSubmissionStatus.SUBMITTED, FeedbackSubmissionStatus.EXPIRED)) return
+        feedbackDrafts[FeedbackContracts.key(current, renderId)] = data.deepCopy() to template.normalized(value)
+        while (feedbackDrafts.size > 500) feedbackDrafts.remove(feedbackDrafts.keys.first())
+    }
+
+    /** Existing entry point accepts either local or server IDs; the wire always uses the server ID. */
     fun submitFeedback(messageId: String, ratingType: String, ratingValue: Int, feedbackText: String?) {
-        if (mutableChatUiState.value.connectionStatus != ConnectionStatus.CONNECTED || mutableChatUiState.value.isOffline) return
-        val feedbackLockKey = "$messageId:feedback"
-        if (!lockedActionKeys.add(feedbackLockKey)) return
+        val message = feedbackMessage(messageId) ?: return
+        val renderId = message.actions?.string("renderId")
+        submitFeedbackInternal(message, ratingType, renderId, FeedbackDraft(ratingValue, feedbackText.orEmpty()))
+    }
+
+    @JvmOverloads
+    fun submitFeedbackResponse(messageId: String, draft: FeedbackDraft, renderId: String? = null) {
+        val message = feedbackMessage(messageId) ?: return
+        val payload = FeedbackContracts.payload(message, renderId) ?: return
+        val template = FeedbackContracts.parse(payload) ?: return
+        val answer = template.normalized(draft)
+        if (!template.valid(answer.rating)) return
+        submitFeedbackInternal(message, template.type, renderId, answer)
+    }
+
+    private fun submitFeedbackInternal(message: ChatMessage, type: String, renderId: String?, draft: FeedbackDraft) {
+        if (isClosed || message.role != MessageRole.ASSISTANT) return
+        val serverId = message.serverMessageId ?: return
+        val renderKey = renderId.orEmpty()
+        val response = message.feedbackResponses[renderKey] ?: FeedbackResponseState()
+        if (response.status in setOf(FeedbackSubmissionStatus.PENDING, FeedbackSubmissionStatus.SUBMITTED, FeedbackSubmissionStatus.EXPIRED)) return
+        val client = artemisSocketClient ?: return
+        val payload = FeedbackContracts.payload(message, renderId)?.deepCopy()
+        if (type == "text" && draft.comments.isBlank()) return
+        val key = FeedbackContracts.key(message, renderId)
+        feedbackDrafts[key] = (payload ?: JsonObject()) to draft
+        while (feedbackDrafts.size > 500) feedbackDrafts.remove(feedbackDrafts.keys.first())
+        fun publish(status: FeedbackSubmissionStatus, code: String? = null) {
+            val current = feedbackMessage(serverId) ?: return
+            updateMessage(current.messageId) { it.copy(feedbackResponses = it.feedbackResponses +
+                (renderKey to FeedbackResponseState(status, draft, code))) }
+        }
+        if (state.value.connectionStatus != ConnectionStatus.CONNECTED || state.value.isOffline) {
+            publish(FeedbackSubmissionStatus.FAILED, "NOT_CONNECTED")
+            return
+        }
+        val session = state.value.sessionId
+        val operation = UUID.randomUUID().toString()
+        feedbackOperations[key] = operation
+        publish(FeedbackSubmissionStatus.PENDING)
+        fun finish(status: FeedbackSubmissionStatus, code: String? = null) {
+            if (isClosed || state.value.sessionId != session || feedbackOperations[key] != operation) return
+            feedbackOperations.remove(key)
+            val current = feedbackMessage(serverId) ?: return
+            if (FeedbackContracts.payload(current, renderId) != payload) return
+            publish(status, code)
+            if (status == FeedbackSubmissionStatus.SUBMITTED) feedbackDrafts.remove(key)
+            if (status == FeedbackSubmissionStatus.FAILED) artemisUiHandle.emit(ArtemisUiEvent.Error(
+                code ?: "FEEDBACK_REJECTED", label(com.artemis.uisdk.R.string.artemis_feedback_rejected), true))
+        }
         try {
-            artemisSocketClient?.submitFeedback(messageId, ratingType, ratingValue, feedbackText, null,
+            client.submitFeedback(serverId, type, draft.rating ?: 0, draft.comments.trim().takeIf(String::isNotBlank), renderId,
+                draft.followUpRating, draft.followUpText.trim().takeIf(String::isNotBlank), false, 10_000,
                 object : ArtemisFeedbackCallback {
-                    override fun onSuccess(feedbackId: String) {
-                        lockedActionKeys.add(feedbackLockKey)
-                        updateMessage(messageId) { it.copy(presentationVersion = it.presentationVersion + 1) }
-                    }
+                    override fun onSuccess(feedbackId: String) = finish(FeedbackSubmissionStatus.SUBMITTED)
                     override fun onFailure(code: String, message: String) {
-                        lockedActionKeys.remove(feedbackLockKey)
-                        updateMessage(messageId) { it.copy(presentationVersion = it.presentationVersion + 1) }
-                        setState(mutableChatUiState.value.copy(errorMessage = message))
-                        artemisUiHandle.emit(ArtemisUiEvent.Error(code, message, true))
+                        val status = when (code) {
+                            "DUPLICATE_FEEDBACK" -> FeedbackSubmissionStatus.SUBMITTED
+                            "EXPIRED" -> FeedbackSubmissionStatus.EXPIRED
+                            else -> FeedbackSubmissionStatus.FAILED
+                        }
+                        finish(status, code)
                     }
                 })
-        } catch (error: RuntimeException) {
-            lockedActionKeys.remove(feedbackLockKey)
-            updateMessage(messageId) { it.copy(presentationVersion = it.presentationVersion + 1) }
-            setState(mutableChatUiState.value.copy(errorMessage = error.message ?: "Feedback could not be sent"))
+        } catch (_: RuntimeException) {
+            finish(FeedbackSubmissionStatus.FAILED, "SEND_REJECTED")
         }
     }
 
+    fun isTemplateActionLocked(messageId: String, actionIdentifier: String, renderId: String?): Boolean =
+        (renderId != null && "render:$renderId" in lockedActionKeys) || isActionLocked(messageId, actionIdentifier)
+
     fun isActionLocked(messageId: String, actionIdentifier: String) =
-        "$messageId:$actionIdentifier" in lockedActionKeys || mutableChatUiState.value.messages
+        (actionIdentifier == "feedback" && feedbackMessage(messageId)?.feedbackResponses?.values?.any {
+            it.status in setOf(FeedbackSubmissionStatus.PENDING, FeedbackSubmissionStatus.SUBMITTED, FeedbackSubmissionStatus.EXPIRED)
+        } == true) || "$messageId:$actionIdentifier" in lockedActionKeys || mutableChatUiState.value.messages
             .find { it.messageId == messageId }?.actions?.let { actions ->
                 actions.obj("submitted")?.string("status") in setOf("pending", "submitted") || actions.string("renderId")?.let { "render:$it" in lockedActionKeys } == true
             } == true
 
+    private fun templatePayloads(message: ChatMessage, name: String): List<com.google.gson.JsonElement> =
+        listOfNotNull(message.richContent?.get(name)) + message.renderables?.toList().orEmpty().mapNotNull {
+            it.takeIf { entry -> entry.isJsonObject && entry.asJsonObject.string("name") == name }?.asJsonObject?.get("payload")
+        }
+
     private fun actionDisplayLabel(message: ChatMessage?, id: String): String? {
         message ?: return null
-        val quickReply = message.richContent?.array("quick_replies")?.firstOrNull { it.isJsonObject && it.asJsonObject.string("id") == id }?.asJsonObject
+        val quickReply = templatePayloads(message, "quick_replies").flatMap { it.takeIf { value -> value.isJsonArray }?.asJsonArray?.toList().orEmpty() }
+            .firstOrNull { it.isJsonObject && it.asJsonObject.string("id") == id }?.asJsonObject
         val buttons = message.actions?.array("elements")?.filter { it.isJsonObject && (it.asJsonObject.string("type") ?: "button") == "button" }.orEmpty() +
-            message.richContent?.obj("carousel")?.array("cards")?.flatMap { it.takeIf { it.isJsonObject }?.asJsonObject?.array("buttons")?.toList().orEmpty() }.orEmpty()
+            templatePayloads(message, "carousel").flatMap { it.takeIf { value -> value.isJsonObject }?.asJsonObject?.array("cards")?.toList().orEmpty() }
+                .flatMap { it.takeIf { value -> value.isJsonObject }?.asJsonObject?.array("buttons")?.toList().orEmpty() }
         val button = buttons.firstOrNull { it.isJsonObject && it.asJsonObject.string("id") == id }?.asJsonObject
         return (quickReply ?: button)?.string("label")?.replace(Regex("[\\u202A-\\u202E\\u2066-\\u2069]"), "")?.trim()?.take(500)?.takeIf(String::isNotBlank)
     }
@@ -470,6 +670,8 @@ class ArtemisChatViewModel internal constructor(
         clearAttachmentQueue()
         attachmentMetadataExecutor.shutdownNow()
         surveyDrafts.clear()
+        templateDrafts.clear(); feedbackDrafts.clear(); feedbackOperations.clear()
+        clearAuthorizationOperations()
         unregisterConnectivity()
         val client = artemisSocketClient
         if (reason == "END_SESSION" || artemisUiHandle.config.session.endSessionOnClose) {
@@ -483,6 +685,7 @@ class ArtemisChatViewModel internal constructor(
 
     private fun applyAttachmentPolicy(scope: JsonObject) {
         if (isClosed) return
+        artemisUiHandle.applyRuntimeBranding(scope)
         val wasEnabled = attachmentsEnabled
         val setting = scope.obj("widgetConfig")?.obj("theme")?.get("attachmentButtonEnabled")
         val brandingEnabled = setting?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive?.let {
@@ -493,10 +696,11 @@ class ArtemisChatViewModel internal constructor(
         if (BuildConfig.DEBUG) Log.d("ArtemisAttachment", "BRANDING attachmentButtonEnabled=$brandingEnabled attachmentWritePermitted=$mayWrite")
         if (wasEnabled && !attachmentsEnabled && attachmentSelections.isNotEmpty()) {
             cancelAttachmentUpload()
-            setState(state.value.copy(errorMessage = ATTACHMENTS_DISABLED_MESSAGE))
+            setState(state.value.copy(errorMessage = attachmentsDisabledMessage))
         }
         if (attachmentsEnabled) {
-            if (state.value.errorMessage == ATTACHMENTS_DISABLED_MESSAGE) setState(state.value.copy(errorMessage = null))
+            if (state.value.errorMessage == lastAttachmentPolicyError) setState(state.value.copy(errorMessage = null))
+            lastAttachmentPolicyError = null
             startNextAttachment()
         }
     }
@@ -515,7 +719,7 @@ class ArtemisChatViewModel internal constructor(
             applyAttachmentPolicy(artemisSocketClient?.sessionScope ?: JsonObject())
             update { chatUiState ->
                 chatUiState.copy(connectionStatus = ConnectionStatus.CONNECTED,
-                    errorMessage = if (chatUiState.attachmentDrafts.isNotEmpty() && !attachmentsEnabled) ATTACHMENTS_DISABLED_MESSAGE else null)
+                    errorMessage = if (chatUiState.attachmentDrafts.isNotEmpty() && !attachmentsEnabled) attachmentsDisabledMessage else null)
             }
             mainThreadHandler.post { startNextAttachment() }
             artemisUiHandle.emit(ArtemisUiEvent.ConnectionChanged("CONNECTED"))
@@ -525,8 +729,13 @@ class ArtemisChatViewModel internal constructor(
         override fun onDisconnected(reason: String) {
             if (isClosed) return
             update { chatUiState ->
-                chatUiState.copy(connectionStatus = ConnectionStatus.DISCONNECTED, isTyping = false)
+                chatUiState.copy(connectionStatus = ConnectionStatus.DISCONNECTED, isTyping = false, messages = chatUiState.messages.map { m ->
+                    m.copy(authorization = m.authorization?.let { card -> card.copy(rows = card.rows.map { row ->
+                        if (row.status in setOf(AuthorizationStatus.VERIFYING, AuthorizationStatus.CANCELLING)) row.copy(status = AuthorizationStatus.FAILED) else row
+                    }) })
+                })
             }
+            pruneAuthorizationOperations()
             artemisUiHandle.emit(ArtemisUiEvent.ConnectionChanged("DISCONNECTED", reason))
         }
         override fun onMessage(payload: String) { if (!isClosed) parseFrame(payload) }
@@ -549,10 +758,19 @@ class ArtemisChatViewModel internal constructor(
         if (frame is ChatFrame.Activity && !artemisUiHandle.config.features.activityUpdates) return
         val previousSession = transcript.state.sessionId
         transcript.apply(frame)
+        if (frame is ChatFrame.Error && frame.code?.startsWith("AUTH_") == true && artemisUiHandle.config.features.authentication) {
+            transcript.update(transcript.state.copy(messages = transcript.state.messages.map { m ->
+                m.copy(authorization = m.authorization?.let { card -> card.copy(rows = card.rows.map { row ->
+                    if (row.status in setOf(AuthorizationStatus.VERIFYING, AuthorizationStatus.CANCELLING)) row.copy(status = AuthorizationStatus.FAILED) else row
+                }) })
+            }))
+        }
         if (frame is ChatFrame.Session && previousSession != transcript.state.sessionId) {
-            lockedActionKeys.clear(); surveyDrafts.clear(); clearAttachmentQueue()
+            clearAuthorizationOperations()
+            lockedActionKeys.clear(); surveyDrafts.clear(); templateDrafts.clear(); feedbackDrafts.clear(); feedbackOperations.clear(); clearAttachmentQueue()
         }
         setState(transcript.state)
+        if (frame is ChatFrame.Authorization || frame is ChatFrame.Error) pruneAuthorizationOperations()
         if (frame is ChatFrame.End) {
             mutableChatUiState.value.messages.find { it.messageId == frame.message.messageId }?.let(::logBotResponse)
             artemisUiHandle.emit(ArtemisUiEvent.MessageChanged(frame.message.messageId, "assistant"))
@@ -593,8 +811,9 @@ class ArtemisChatViewModel internal constructor(
         if (Looper.myLooper() == Looper.getMainLooper()) {
             transcript.update(newChatUiState)
             mutableChatUiState.value = newChatUiState
+            artemisUiHandle.publishState(newChatUiState)
         } else {
-            mainThreadHandler.post { if (!isClosed) { transcript.update(newChatUiState); mutableChatUiState.value = newChatUiState } }
+            mainThreadHandler.post { if (!isClosed) { transcript.update(newChatUiState); mutableChatUiState.value = newChatUiState; artemisUiHandle.publishState(newChatUiState) } }
         }
     }
     private fun update(transformState: (ChatUiState) -> ChatUiState) {
@@ -606,8 +825,8 @@ class ArtemisChatViewModel internal constructor(
         artemisUiHandle.emit(ArtemisUiEvent.Error(code, message, recoverable))
     }
     private fun safeError(error: Throwable) = when (error) {
-        is java.io.IOException -> "Connection problem. Check the network and retry."
-        else -> "Connection failed. Check the chat configuration and retry."
+        is java.io.IOException -> label(com.artemis.uisdk.R.string.artemis_network_error)
+        else -> label(com.artemis.uisdk.R.string.artemis_configuration_error)
     }
 
     private fun observeConnectivity() {

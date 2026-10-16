@@ -119,3 +119,19 @@ external forms and dedicated post-transfer survey acknowledgements. Agent calls/
 Run `bash gradlew verifyParityBaseline` to build, lint and run the complete SDK/sample regression gate.
 See [configuration, behavior and live acceptance scenarios](docs/attachments-contact-center.md), including the
 Runtime replay requirement for surveys missed while offline. Publish both modules at the same release version.
+
+### Runtime appearance, strings and host renderers
+
+Step 4 adds branding from existing SDK init/refresh responses, `ArtemisStrings`, runtime theme updates, local logo resolvers, custom template renderers, and native host commands/state. No additional branding API call is introduced. See [customization and host APIs](docs/customization-and-host-apis.md) for supported fields, precedence, examples and validation scope.
+
+### Advanced feedback and remaining parity
+
+Advanced assistant surveys are opt-in with `features.advancedFeedback = true` (enabled in the sample). See [advanced feedback](docs/advanced-feedback.md) for payloads and host APIs, and the [remaining parity plan](docs/pending-parity-plan.md) for the staged delivery sequence and acceptance criteria.
+
+### Native template field coverage
+
+See [native template parity](docs/template-parity.md) for form/action submissions, optional presentation fields, Markdown/channel fallbacks, offline gallery examples, native bounds and acceptance status.
+
+### Service authorization
+
+Opt in with `features.authentication = true` (enabled in the sample) for preflight/JIT authorization cards, Android system-browser or host-owned sign-in launch, explicit check/cancel, and Runtime-confirmed states. See [authentication workflows](docs/authentication-workflows.md) for host APIs, mobile return behavior, Runtime contract compatibility and pending live acceptance checks.

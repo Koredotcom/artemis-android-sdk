@@ -21,6 +21,8 @@ import com.artemis.uisdk.ArtemisUiEvent
 import com.artemis.uisdk.ArtemisUiHandle
 import com.artemis.uisdk.R
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.combine
+import com.artemis.uisdk.ArtemisPresentation
 
 class ArtemisChatFragment : Fragment() {
     companion object {
@@ -55,6 +57,7 @@ class ArtemisChatFragment : Fragment() {
     private val scrollFollow = ChatScrollFollow()
     private var submittedMessages: List<ChatMessage>? = null
     private var wasMinimized = false
+    private var appliedPresentation: ArtemisPresentation? = null
     private val chatTitle: String get() = arguments?.getString(ARG_CHAT_TITLE) ?: "Chat"
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -148,8 +151,12 @@ class ArtemisChatFragment : Fragment() {
         }
         chatMessageAdapter = ChatMessageAdapter(
             features = artemisUiHandle.config.features,
-            theme = artemisUiHandle.config.theme,
+            theme = artemisUiHandle.branding.theme,
+            handle = artemisUiHandle,
             callbacks = object : ChatMessageAdapter.Callbacks {
+                override fun onAuthorize(message: ChatMessage, rowId: String) = openAuthorization(message.messageId, rowId)
+                override fun onCheckAuthorization(message: ChatMessage, rowId: String) = artemisChatViewModel.verifyAuthorization(message.messageId, rowId)
+                override fun onCancelAuthorization(message: ChatMessage, rowId: String) = artemisChatViewModel.cancelAuthorization(message.messageId, rowId)
                 override fun onAction(message: ChatMessage, actionIdentifier: String, actionValue: String?, formData: Map<String, String>?, renderIdentifier: String?) =
                     artemisChatViewModel.submitAction(message.messageId, actionIdentifier, actionValue, formData, renderIdentifier)
                 override fun onFeedback(message: ChatMessage, feedbackType: String, rating: Int, feedbackText: String?) {
@@ -157,10 +164,17 @@ class ArtemisChatFragment : Fragment() {
                         artemisChatViewModel.submitFeedback(serverMessageId, feedbackType, rating, feedbackText)
                     }
                 }
+                override fun isTemplateLocked(message: ChatMessage, actionIdentifier: String, renderId: String?) = artemisChatViewModel.isTemplateActionLocked(message.messageId, actionIdentifier, renderId)
+                override fun templateDraft(message: ChatMessage, renderId: String?, scope: String, signature: com.google.gson.JsonObject) = artemisChatViewModel.templateDraft(message, renderId, scope, signature)
+                override fun onTemplateDraft(message: ChatMessage, renderId: String?, scope: String, signature: com.google.gson.JsonObject, values: Map<String, String>) = artemisChatViewModel.updateTemplateDraft(message, renderId, scope, signature, values)
+                override fun feedbackState(message: ChatMessage, data: com.google.gson.JsonObject) = artemisChatViewModel.feedbackState(message, data)
+                override fun onFeedbackDraft(message: ChatMessage, data: com.google.gson.JsonObject, draft: FeedbackDraft) = artemisChatViewModel.updateFeedbackDraft(message, data, draft)
+                override fun onFeedbackResponse(message: ChatMessage, data: com.google.gson.JsonObject, draft: FeedbackDraft) =
+                    artemisChatViewModel.submitFeedbackResponse(message.messageId, draft, FeedbackContracts.renderId(message, data))
                 override fun onAttachment(message: ChatMessage, attachment: AttachmentRef) {
                     artemisChatViewModel.openAttachment(attachment) { url ->
                         this@ArtemisChatFragment.context?.takeIf { view != null }?.let { ctx -> runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
-                            .onFailure { artemisChatViewModel.contactCenterError("No application is available to open this attachment.") } }
+                            .onFailure { artemisChatViewModel.contactCenterError(label(R.string.artemis_no_attachment_app)) } }
                     }
                 }
                 override fun onTransferSurvey(message: ChatMessage, score: Int, comments: String?) = artemisChatViewModel.submitTransferSurvey(message.messageId, score, comments)
@@ -197,20 +211,21 @@ class ArtemisChatFragment : Fragment() {
         }
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                artemisChatViewModel.state.collect { chatUiState ->
+                combine(artemisChatViewModel.state, artemisUiHandle.presentation) { state, presentation -> state to presentation }.collect { (chatUiState, presentation) ->
+                    applyPresentation(view, presentation)
                     connectionStatusTextView.text = when {
-                        chatUiState.isOffline -> "No internet connection"
+                        chatUiState.isOffline -> label(R.string.artemis_offline)
                         chatUiState.connectionStatus == ConnectionStatus.CONNECTED -> when (chatUiState.agentTransferStatus) {
-                            AgentTransferStatus.QUEUED -> "Waiting for a human agent…"
-                            AgentTransferStatus.CONNECTED -> "Connected to a human agent"
-                            else -> "Connected"
+                            AgentTransferStatus.QUEUED -> label(R.string.artemis_agent_waiting)
+                            AgentTransferStatus.CONNECTED -> label(R.string.artemis_agent_connected)
+                            else -> label(R.string.artemis_connected)
                         }
-                        chatUiState.connectionStatus == ConnectionStatus.CONNECTING -> "Connecting…"
-                        chatUiState.connectionStatus == ConnectionStatus.RECONNECTING -> "Reconnecting…"
-                        chatUiState.connectionStatus == ConnectionStatus.FAILED -> chatUiState.errorMessage ?: "Connection failed"
-                        else -> chatUiState.errorMessage ?: "Disconnected"
+                        chatUiState.connectionStatus == ConnectionStatus.CONNECTING -> presentation.branding.connectingStatusText ?: label(R.string.artemis_connecting)
+                        chatUiState.connectionStatus == ConnectionStatus.RECONNECTING -> label(R.string.artemis_reconnecting)
+                        chatUiState.connectionStatus == ConnectionStatus.FAILED -> chatUiState.errorMessage ?: label(R.string.artemis_connection_failed)
+                        else -> chatUiState.errorMessage ?: label(R.string.artemis_disconnected)
                     }
-                    typingIndicatorTextView.text = chatUiState.activityText ?: if (chatUiState.agentTransferStatus == AgentTransferStatus.CONNECTED) "Support agent is typing…" else getString(R.string.artemis_typing)
+                    typingIndicatorTextView.text = chatUiState.activityText ?: if (chatUiState.agentTransferStatus == AgentTransferStatus.CONNECTED) label(R.string.artemis_agent_typing) else label(R.string.artemis_typing)
                     typingIndicatorTextView.visibility = if (artemisUiHandle.config.features.typingIndicator && (chatUiState.isTyping || chatUiState.initialAssistantMessagePending)) View.VISIBLE else View.GONE
                     retryConnectionButton.visibility = if (chatUiState.connectionStatus in setOf(ConnectionStatus.DISCONNECTED, ConnectionStatus.FAILED)) View.VISIBLE else View.GONE
                     val canSendMessages = chatUiState.connectionStatus == ConnectionStatus.CONNECTED && !chatUiState.isOffline
@@ -219,7 +234,7 @@ class ArtemisChatFragment : Fragment() {
                     attachButton.isEnabled = canSendMessages && chatUiState.attachmentDrafts.size < artemisChatViewModel.maxAttachmentsPerMessage
                     attachButton.alpha = if (attachButton.isEnabled) 1f else .45f
                     attachButton.contentDescription = if (chatUiState.attachmentDrafts.size >= artemisChatViewModel.maxAttachmentsPerMessage)
-                        getString(R.string.artemis_attachment_limit_reached, artemisChatViewModel.maxAttachmentsPerMessage) else getString(R.string.artemis_attach_file)
+                        label(R.string.artemis_attachment_limit_reached, artemisChatViewModel.maxAttachmentsPerMessage) else label(R.string.artemis_attach_file)
                     attachmentStrip.render(chatUiState.attachmentDrafts, canSendMessages && artemisChatViewModel.attachmentsEnabled)
                     errorView.text = chatUiState.errorMessage.orEmpty()
                     errorView.visibility = if (chatUiState.errorMessage.isNullOrBlank()) View.GONE else View.VISIBLE
@@ -239,6 +254,61 @@ class ArtemisChatFragment : Fragment() {
                 }
             }
         }
+    }
+
+    private fun label(id: Int, vararg args: Any) = artemisUiHandle.presentation.value.strings.text(requireContext(), id, *args)
+
+    private fun applyPresentation(root: View, value: ArtemisPresentation) {
+        if (appliedPresentation == value) return
+        val theme = value.branding.theme
+        val primary = color(theme.primary, requireContext().getColor(R.color.artemis_primary))
+        val foreground = color(theme.primaryForeground, if (androidx.core.graphics.ColorUtils.calculateLuminance(primary) > .5) Color.BLACK else Color.WHITE)
+        val headerBackground = color(theme.headerBackground, primary)
+        val headerText = color(theme.headerText, if (androidx.core.graphics.ColorUtils.calculateLuminance(headerBackground) > .5) Color.BLACK else Color.WHITE)
+        root.setBackgroundColor(color(theme.background, requireContext().getColor(R.color.artemis_background)))
+        root.findViewById<View>(R.id.artemis_header).setBackgroundColor(headerBackground)
+        val title = value.branding.assistantName ?: chatTitle
+        root.findViewById<TextView>(R.id.artemis_title).apply { text = title; setTextColor(headerText) }
+        connectionStatusTextView.setTextColor(headerText)
+        val avatar = root.findViewById<TextView>(R.id.artemis_avatar)
+        avatar.text = title.trim().take(1).uppercase().ifBlank { "A" }
+        avatar.setTextColor(headerText)
+        val logo = root.findViewById<android.widget.ImageView>(R.id.artemis_logo)
+        // Resolvers are host-controlled local asset lookup. No image HTTP request is made here.
+        if (appliedPresentation == null || appliedPresentation?.branding?.logoUrl != value.branding.logoUrl || appliedPresentation?.logoResolver !== value.logoResolver) {
+            val drawable = value.branding.logoUrl?.let { url -> runCatching { value.logoResolver?.resolve(requireContext(), url) }.getOrNull() }
+            logo.setImageDrawable(drawable)
+            logo.visibility = if (drawable == null) View.GONE else View.VISIBLE
+            avatar.visibility = if (drawable == null) View.VISIBLE else View.GONE
+        }
+        listOf(R.id.artemis_close to R.string.artemis_close, R.id.artemis_minimize to R.string.artemis_minimize).forEach { (id, text) ->
+            root.findViewById<android.widget.ImageButton>(id).apply {
+                imageTintList = android.content.res.ColorStateList.valueOf(headerText); contentDescription = label(text)
+            }
+        }
+        root.findViewById<View>(R.id.artemis_composer).setBackgroundColor(color(theme.composerBackground, requireContext().getColor(R.color.artemis_background)))
+        val border = color(theme.border, requireContext().getColor(R.color.artemis_border))
+        root.findViewById<View>(R.id.artemis_composer_divider).setBackgroundColor(border)
+        (messageInputEditText.background.mutate() as? android.graphics.drawable.GradientDrawable)?.apply {
+            setColor(color(theme.surface, requireContext().getColor(R.color.artemis_background)))
+            setStroke(convertDpToPixels(1).coerceAtLeast(1), border)
+        }
+        messageInputEditText.setTextColor(color(theme.composerText ?: theme.text, requireContext().getColor(R.color.artemis_text)))
+        messageInputEditText.setHintTextColor(color(theme.composerPlaceholder ?: theme.mutedText, requireContext().getColor(R.color.artemis_muted)))
+        messageInputEditText.hint = value.branding.placeholderText ?: label(R.string.artemis_hint)
+        sendMessageButton.backgroundTintList = android.content.res.ColorStateList.valueOf(primary)
+        sendMessageButton.imageTintList = android.content.res.ColorStateList.valueOf(foreground)
+        sendMessageButton.contentDescription = label(R.string.artemis_send)
+        attachButton.imageTintList = android.content.res.ColorStateList.valueOf(color(theme.composerText ?: theme.text, requireContext().getColor(R.color.artemis_text)))
+        root.findViewById<TextView>(R.id.artemis_empty_title).apply { text = label(R.string.artemis_empty_title); setTextColor(color(theme.text, requireContext().getColor(R.color.artemis_text))) }
+        root.findViewById<TextView>(R.id.artemis_empty_body).apply { text = label(R.string.artemis_empty_body); setTextColor(color(theme.mutedText, requireContext().getColor(R.color.artemis_muted))) }
+        typingIndicatorTextView.setTextColor(color(theme.mutedText, requireContext().getColor(R.color.artemis_muted)))
+        retryConnectionButton.text = label(R.string.artemis_retry)
+        retryConnectionButton.setTextColor(primary)
+        errorView.setTextColor(color(theme.text, requireContext().getColor(R.color.artemis_text)))
+        attachmentStrip.updatePresentation(primary, value.strings)
+        chatMessageAdapter.updatePresentation(value)
+        appliedPresentation = value
     }
 
     private fun updateSendState() {
@@ -276,7 +346,29 @@ class ArtemisChatFragment : Fragment() {
         super.onDestroy()
     }
 
+    private fun openAuthorization(messageId: String, rowId: String) {
+        val request = artemisChatViewModel.beginAuthorization(messageId, rowId) ?: return
+        runCatching {
+            val launcher = artemisUiHandle.authorizationLauncher
+            if (launcher != null) launcher.launch(request)
+            else {
+                artemisChatViewModel.trackAuthorizationBrowser(request)
+                startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(request.authorizationUrl)).apply {
+                    addCategory(android.content.Intent.CATEGORY_BROWSABLE)
+                })
+            }
+        }.onFailure {
+            artemisChatViewModel.completeAuthorization(request, com.artemis.uisdk.ArtemisAuthorizationResult.FAILED)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::artemisChatViewModel.isInitialized) artemisChatViewModel.authorizationBrowserReturned()
+    }
+
     override fun onStop() {
+        if (::artemisChatViewModel.isInitialized) artemisChatViewModel.authorizationBrowserDeparted()
         if (::artemisChatViewModel.isInitialized) artemisChatViewModel.sendPresence(false)
         super.onStop()
     }
@@ -286,6 +378,7 @@ class ArtemisChatFragment : Fragment() {
         artemisUiHandleListenerRegistration = null
         if (::chatMessagesRecyclerView.isInitialized) chatMessagesRecyclerView.adapter = null
         submittedMessages = null
+        appliedPresentation = null
         super.onDestroyView()
     }
 

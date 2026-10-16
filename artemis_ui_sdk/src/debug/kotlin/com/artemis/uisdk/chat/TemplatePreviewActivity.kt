@@ -41,16 +41,31 @@ class TemplatePreviewActivity : AppCompatActivity() {
         findViewById<View>(R.id.artemis_minimize).setOnClickListener { finish() }
         val contactCenterPreview = intent.getBooleanExtra("contactCenter", false)
         val drafts = mutableMapOf<String, SurveyDraft>()
-        val chatMessageAdapter = ChatMessageAdapter(ArtemisFeatureConfig(attachments = contactCenterPreview, contactCenter = contactCenterPreview), ArtemisThemeConfig(),
+        val fieldDrafts = mutableMapOf<String, Pair<com.google.gson.JsonObject, Map<String, String>>>()
+        val chatMessageAdapter = ChatMessageAdapter(ArtemisFeatureConfig(attachments = contactCenterPreview, contactCenter = contactCenterPreview, authentication = true), ArtemisThemeConfig(),
             object : ChatMessageAdapter.Callbacks {
                 override fun onAction(message: ChatMessage, actionIdentifier: String, actionValue: String?, formData: Map<String, String>?, renderIdentifier: String?) {
-                    Toast.makeText(this@TemplatePreviewActivity, "Preview action: $actionIdentifier", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@TemplatePreviewActivity, "Offline action: $actionIdentifier · value=$actionValue · render=$renderIdentifier", Toast.LENGTH_LONG).show()
+                }
+                override fun templateDraft(message: ChatMessage, renderId: String?, scope: String, signature: com.google.gson.JsonObject) =
+                    fieldDrafts[TemplateContracts.draftKey(message, renderId, scope)]?.takeIf { it.first == signature }?.second.orEmpty()
+                override fun onTemplateDraft(message: ChatMessage, renderId: String?, scope: String, signature: com.google.gson.JsonObject, values: Map<String, String>) {
+                    fieldDrafts[TemplateContracts.draftKey(message, renderId, scope)] = signature.deepCopy() to values.toMap()
                 }
                 override fun onFeedback(message: ChatMessage, feedbackType: String, rating: Int, feedbackText: String?) {
                     Toast.makeText(this@TemplatePreviewActivity, "Preview rating: $rating", Toast.LENGTH_SHORT).show()
                 }
                 override fun onAttachment(message: ChatMessage, attachment: AttachmentRef) {
                     Toast.makeText(this@TemplatePreviewActivity, "Offline preview: ${attachment.filename}", Toast.LENGTH_SHORT).show()
+                }
+                override fun onAuthorize(message: ChatMessage, rowId: String) {
+                    Toast.makeText(this@TemplatePreviewActivity, "Offline preview: sign-in is not launched", Toast.LENGTH_SHORT).show()
+                }
+                override fun onCheckAuthorization(message: ChatMessage, rowId: String) {
+                    Toast.makeText(this@TemplatePreviewActivity, "Offline preview: Runtime confirmation required", Toast.LENGTH_SHORT).show()
+                }
+                override fun onCancelAuthorization(message: ChatMessage, rowId: String) {
+                    Toast.makeText(this@TemplatePreviewActivity, "Offline preview: no workflow was cancelled", Toast.LENGTH_SHORT).show()
                 }
                 override fun surveyDraft(message: ChatMessage) = drafts[message.messageId] ?: SurveyDraft()
                 override fun onSurveyDraft(message: ChatMessage, draft: SurveyDraft) { drafts[message.messageId] = draft }
@@ -79,6 +94,15 @@ class TemplatePreviewActivity : AppCompatActivity() {
             """{"file":{"filename":"Order confirmation.pdf","size_bytes":184320,"url":"https://example.com/confirmation.pdf"}}""",
             """{"html":"<b>Rich content</b><p>Native templates keep content structured and easy to read.</p>"}"""
         )
+        val additionalExamples = listOf(
+            """{"form":{"title":"Template parity: required fields and pickers","fields":[{"id":"email","type":"input","label":"Email","input_type":"email","required":true,"description":"Must be a valid address"},{"id":"date","type":"input","label":"Date","input_type":"date","required":true},{"id":"time","type":"input","label":"Time","input_type":"time","required":true},{"id":"queue","type":"select","label":"Team","placeholder":"Choose a team","required":true,"options":[{"id":"sales","label":"Sales","description":"Product questions"},{"id":"support","label":"Support","description":"Existing requests"}]},{"id":"details","type":"button","label":"View details","value":"details"}],"submit_label":"Send request"}}""",
+            """{"chart":{"title":"Signed values","type":"bar","data":[{"label":"Loss","value":-20,"color":"#DC2626"},{"label":"Zero","value":0},{"label":"Gain","value":15,"color":"#16A34A"}]}}""",
+            """{"chart":{"title":"Negative trend","type":"line","data":[{"label":"A","value":-10},{"label":"B","value":-5},{"label":"C","value":-12}]}}""",
+            """{"chart":{"title":"Pie shares","type":"pie","data":[{"label":"A","value":2},{"label":"B","value":3},{"label":"C","value":5}]}}""",
+            """{"table":{"columns":[{"key":"item","header":"Item","align":"left"},{"key":"amount","header":"Amount","align":"right"}],"max_visible_rows":1,"rows":[{"item":"One","amount":10},{"item":"Two","amount":20},{"item":"Three","amount":30}]}}""",
+            """{"markdown":"## Markdown table\n\n| Item | Amount |\n| :--- | ---: |\n| **One** | 10 |\n| Two | 20 |\n\n- [x] Selected task\n- [ ] Pending task\n\n[Reference][guide]\n\n[guide]: https://example.com/guide"}""",
+            """{"adaptive_card":"{\"body\":[{\"type\":\"TextBlock\",\"text\":\"Readable channel preview\"}]}"}"""
+        )
         val previewMessages = mutableListOf(
             ChatMessage("welcome", role = MessageRole.ASSISTANT, text = "Hello! How can I help you today?"),
             ChatMessage("user", role = MessageRole.USER, text = "Show me what I can do here."),
@@ -91,10 +115,19 @@ class TemplatePreviewActivity : AppCompatActivity() {
                     "If you already have a reference, ticket, or case ID, send that too.",
             ),
         )
-        previewMessages += richContentExamples.mapIndexed { exampleIndex, exampleJson ->
+        previewMessages += (richContentExamples + additionalExamples).mapIndexed { exampleIndex, exampleJson ->
             ChatMessage("template-$exampleIndex", serverMessageId = "preview-$exampleIndex", role = MessageRole.ASSISTANT,
                 text = "", richContent = JsonParser.parseString(exampleJson).asJsonObject)
         }
+        previewMessages += ChatMessage("canonical-form", "canonical-form", MessageRole.ASSISTANT, "", renderables = JsonParser.parseString("""[{"name":"form","renderId":"offline-render-1","payload":{"title":"Canonical render-ID form","fields":[{"id":"count","type":"input","label":"Count","input_type":"number","required":true}],"submit_label":"Submit"}}]""").asJsonArray)
+        previewMessages += ChatMessage("auth-preflight", role = MessageRole.SYSTEM, text = "", authorization = AuthorizationCard("offline", AuthorizationKind.PREFLIGHT, listOf(
+            AuthorizationRow("calendar", "Calendar", "https://example.com/authorize", authProfileRef = "calendar", connector = "calendar", blocking = true),
+            AuthorizationRow("directory", "Company directory", status = AuthorizationStatus.CONNECTED),
+        )))
+        previewMessages += ChatMessage("auth-challenge", role = MessageRole.SYSTEM, text = "", authorization = AuthorizationCard("offline", AuthorizationKind.CHALLENGE, listOf(
+            AuthorizationRow("crm-call", "CRM", "https://example.com/authorize", prompt = "Authorize CRM access to continue this request.", canCancel = true),
+            AuthorizationRow("mail-call", "Mail", "https://example.com/authorize", canCancel = true, status = AuthorizationStatus.FAILED, attempted = true),
+        )))
         if (contactCenterPreview) {
             findViewById<TextView>(R.id.artemis_status).text = "Human-agent preview · Offline"
             previewMessages.clear()
@@ -108,6 +141,10 @@ class TemplatePreviewActivity : AppCompatActivity() {
                 ChatMessage("survey", role = MessageRole.ASSISTANT, text = "How was your support experience?", transferSurvey = AgentTransferSurvey("nps", "offline-transfer", commentVisibility = "conditional", commentRatings = listOf(0,1,2,3,4,5,6))),
                 ChatMessage("survey-done", role = MessageRole.ASSISTANT, text = "Support feedback", transferSurvey = AgentTransferSurvey("csat", "offline-done", status = SurveySubmissionStatus.SUBMITTED)),
             )
+        }
+        intent.getStringExtra("example")?.let { exampleId ->
+            val focused = previewMessages.filter { it.messageId == exampleId }
+            if (focused.isNotEmpty()) { previewMessages.clear(); previewMessages.addAll(focused) }
         }
         chatMessageAdapter.submitList(previewMessages.toList()) {
             chatMessagesRecyclerView.scrollToPosition(intent.getIntExtra("position", 0).coerceIn(0, previewMessages.lastIndex))

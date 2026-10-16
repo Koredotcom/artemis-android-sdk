@@ -78,7 +78,7 @@ class MainActivity : AppCompatActivity() {
                     channelId = channelIdentifier.ifEmpty { null },
                     channelName = if (channelIdentifier.isEmpty()) "Support" else null,
                 ),
-                features = com.artemis.uisdk.ArtemisFeatureConfig(attachments = true, contactCenter = true),
+                features = com.artemis.uisdk.ArtemisFeatureConfig(attachments = true, contactCenter = true, advancedFeedback = true, authentication = true),
                 theme = ArtemisThemeConfig(primary = "#2563EB", mode = "system"),
             )
             val handle = artemisUiHandle ?: ArtemisUI.initialize(applicationContext, artemisUiConfiguration).also {

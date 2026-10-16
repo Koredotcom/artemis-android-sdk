@@ -5,14 +5,14 @@ import android.view.ViewGroup
 import android.util.LruCache
 
 internal fun ChatMessage.hasTemplatePresentation() = richContent != null || actions != null || renderables != null ||
-    attachments.isNotEmpty() || agentLink != null || transferSurvey != null || citations.isNotEmpty() || messageSource?.string("system") == "integration"
+    attachments.isNotEmpty() || agentLink != null || transferSurvey != null || authorization != null || citations.isNotEmpty() || messageSource?.string("system") == "integration"
 
 /** Streaming text and timestamp updates do not invalidate unrelated template controls. */
 internal fun sameTemplatePresentation(old: ChatMessage, new: ChatMessage): Boolean {
     if (old.messageId != new.messageId || old.serverMessageId != new.serverMessageId || old.role != new.role ||
         old.presentationVersion != new.presentationVersion || old.richContent != new.richContent ||
         old.actions != new.actions || old.renderables != new.renderables || old.citations != new.citations ||
-        old.messageSource != new.messageSource || old.attachments != new.attachments || old.agentLink != new.agentLink || old.transferSurvey != new.transferSurvey) return false
+        old.messageSource != new.messageSource || old.attachments != new.attachments || old.agentLink != new.agentLink || old.transferSurvey != new.transferSurvey || old.feedbackResponses != new.feedbackResponses || old.authorization != new.authorization) return false
     val markdown = old.richContent?.string("markdown")
     if (markdown != null && (markdown.trim() == old.text.trim()) != (markdown.trim() == new.text.trim())) return false
     // Unknown renderables may omit fallback text when it duplicates the bubble.

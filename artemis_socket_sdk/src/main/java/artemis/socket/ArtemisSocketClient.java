@@ -182,6 +182,33 @@ public final class ArtemisSocketClient {
         sendFrame(frame);
     }
 
+    /** Existing Runtime JIT authorization contract; no credentials or callback URL are sent. */
+    public synchronized void respondToAuthorization(String expectedSessionId, String toolCallId, String status) {
+        requireAuthorizationSession(expectedSessionId);
+        if (isBlank(toolCallId) || toolCallId.length() > 8192 || !("completed".equals(status) || "cancelled".equals(status)))
+            throw new IllegalArgumentException("A valid authorization identity and status are required");
+        JsonObject frame = new JsonObject(); frame.addProperty("type", "auth_response");
+        frame.addProperty("toolCallId", toolCallId); frame.addProperty("status", status);
+        sendFrame(frame);
+    }
+
+    /** Ask Runtime to re-evaluate stored credentials; the client cannot grant authorization. */
+    public synchronized void recheckAuthorization(String expectedSessionId, String authProfileRef, String requirementKey) {
+        requireAuthorizationSession(expectedSessionId);
+        if (isBlank(authProfileRef) || authProfileRef.length() > 8192 || isBlank(requirementKey) || requirementKey.length() > 8192)
+            throw new IllegalArgumentException("A valid authorization requirement is required");
+        JsonObject frame = new JsonObject(); frame.addProperty("type", "consent_satisfy");
+        frame.addProperty("sessionId", expectedSessionId); frame.addProperty("authProfileRef", authProfileRef);
+        frame.addProperty("requirementKey", requirementKey);
+        sendFrame(frame);
+    }
+
+    private void requireAuthorizationSession(String expectedSessionId) {
+        if (isBlank(expectedSessionId) || !expectedSessionId.equals(sessionId))
+            throw new IllegalStateException("Authorization belongs to a different conversation");
+        requireConnectedSocket();
+    }
+
     public void sendPresence(boolean typing) {
         if (!connected) return;
         JsonObject frame = new JsonObject(); frame.addProperty("type", "user_presence");
@@ -210,6 +237,25 @@ public final class ArtemisSocketClient {
     public void submitFeedback(String messageId, String ratingType, int ratingValue,
                                String feedbackText, String actionRenderId, long timeoutMs,
                                ArtemisFeedbackCallback callback) {
+        submitFeedback(messageId, ratingType, ratingValue, feedbackText, actionRenderId,
+                null, null, false, timeoutMs, callback);
+    }
+
+    /** Existing feedback lane with optional resolved-survey answers; omitted fields preserve old frames. */
+    public void submitFeedback(String messageId, String ratingType, int ratingValue,
+                               String feedbackText, String actionRenderId, Integer followUpRating,
+                               String followUpText, boolean amendsRating, long timeoutMs,
+                               ArtemisFeedbackCallback callback) {
+        if (followUpRating != null && followUpText != null) {
+            throw new IllegalArgumentException("A follow-up answer must be rating or text, not both");
+        }
+        if (followUpRating != null && (followUpRating < 0 || followUpRating > 10)) {
+            throw new IllegalArgumentException("Follow-up rating must be between 0 and 10");
+        }
+        if ((feedbackText != null && feedbackText.length() > 5000)
+                || (followUpText != null && followUpText.length() > 5000)) {
+            throw new IllegalArgumentException("Feedback text must not exceed 5000 characters");
+        }
         if (messageId == null || messageId.trim().isEmpty()) {
             throw new IllegalArgumentException("messageId must not be empty");
         }
@@ -250,6 +296,9 @@ public final class ArtemisSocketClient {
                 if (actionRenderId != null) {
                     feedback.addProperty("actionRenderId", actionRenderId);
                 }
+                if (followUpRating != null) feedback.addProperty("followUpRating", followUpRating);
+                if (followUpText != null) feedback.addProperty("followUpText", followUpText);
+                if (amendsRating) feedback.addProperty("amendsRating", true);
                 if (!socket.send(GSON.toJson(feedback))) {
                     finishFeedback(key, pending, null, "SEND_REJECTED",
                             "Artemis socket rejected the feedback");

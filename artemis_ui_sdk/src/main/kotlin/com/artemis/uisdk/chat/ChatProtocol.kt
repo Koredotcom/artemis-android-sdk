@@ -8,6 +8,7 @@ import java.util.UUID
 
 /** The sole wire boundary. Malformed/unknown events never mutate a conversation. */
 internal sealed interface ChatFrame {
+    data class Authorization(val event: AuthorizationEvent) : ChatFrame
     data class Transfer(val sessionId: String, val eventType: String, val messages: List<ChatMessage>, val timestamp: Long = System.currentTimeMillis()) : ChatFrame
     data class Session(val payload: JsonObject) : ChatFrame
     data class Start(val id: String) : ChatFrame
@@ -17,7 +18,7 @@ internal sealed interface ChatFrame {
     data class Typing(val active: Boolean) : ChatFrame
     data class Cancel(val id: String?, val requestId: String?, val reason: String) : ChatFrame
     data class Activity(val type: String, val payload: JsonObject) : ChatFrame
-    data class Error(val text: String) : ChatFrame
+    data class Error(val text: String, val code: String? = null) : ChatFrame
     data class InitialMessage(val pending: Boolean) : ChatFrame
 }
 
@@ -36,6 +37,7 @@ internal object ChatFrameParser {
         val p = JsonParser.parseString(raw).takeIf { it.isJsonObject }?.asJsonObject ?: return null
         val id = p.string("messageId")?.takeIf { it.isNotBlank() }
         when (p.string("type")) {
+            in AuthorizationContracts.eventTypes -> AuthorizationContracts.parse(p)?.let(ChatFrame::Authorization)
             "agent_transfer_event" -> ContactCenterContracts.transfer(p)
             "session_start" -> p.string("sessionId")?.takeIf(String::isNotBlank)?.let { ChatFrame.Session(p) }
             "response_start" -> id?.let { ChatFrame.Start(it) }
@@ -51,7 +53,7 @@ internal object ChatFrameParser {
                 ChatFrame.Activity(if (type == "tool_thought") "thought" else type, event.obj("data", "payload") ?: event)
             }
             "initial_assistant_message_status" -> ChatFrame.InitialMessage(p.flag("pending"))
-            "error" -> ChatFrame.Error(p.string("message", "content", "error") ?: "The assistant could not complete the response")
+            "error" -> ChatFrame.Error(p.string("message", "content", "error") ?: "The assistant could not complete the response", p.string("code"))
             else -> null
         }
     }.getOrNull()
@@ -157,7 +159,8 @@ internal object ChatFrameParser {
 }
 
 /** Pure transcript reducer, shared by live events and persisted-history reconciliation. */
-internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, private val attachmentsEnabled: Boolean = true) {
+internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, private val attachmentsEnabled: Boolean = true, private val authenticationEnabled: Boolean = false) {
+    private val authorization = AuthorizationTranscript()
     private var lastTransferTransitionAt = 0L
     private var transferLiveRevision = 0L
     val transferRevision: Long get() = transferLiveRevision
@@ -165,6 +168,7 @@ internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, 
         attachments = if (attachmentsEnabled) message.attachments else emptyList(),
         agentLink = message.agentLink?.takeIf { contactCenterEnabled && (it.kind != AgentLinkKind.ATTACHMENT || attachmentsEnabled) },
         transferSurvey = message.transferSurvey?.takeIf { contactCenterEnabled },
+        authorization = message.authorization?.takeIf { authenticationEnabled },
     )
     var state = ChatUiState(); private set
     var redaction = false; private set
@@ -184,9 +188,11 @@ internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, 
     }
     fun apply(frame: ChatFrame) {
         when (frame) {
+            is ChatFrame.Authorization -> if (authenticationEnabled) { state = authorization.apply(state, frame.event) }
             is ChatFrame.Session -> {
                 val session = frame.payload.string("sessionId")
                 if (state.sessionId != null && state.sessionId != session) {
+                    authorization.clear()
                     state = state.copy(messages = emptyList(), agentTransferStatus = AgentTransferStatus.NONE, agentTransferSessionId = null, pendingAttachment = null, attachmentDrafts = emptyList(), attachmentFilename = null, attachmentUploading = false, attachmentUploadFailed = false, attachmentUploadProgress = null, attachmentsUnavailable = false); lastTransferTransitionAt = 0; transferLiveRevision = 0; cancelled.clear(); parked.clear()
                 }
                 redaction = frame.payload.obj("capabilities")?.flag("liveUserInputRedaction") == true
@@ -230,6 +236,7 @@ internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, 
                 }
             }
             is ChatFrame.Start -> {
+                authorization.nextTurn()
                 if (frame.id in cancelled) return
                 activeResponse = frame.id
                 if (state.messages.none { it.messageId == frame.id }) upsert(ChatMessage(frame.id, frame.id, MessageRole.ASSISTANT, "", messageStatus = MessageStatus.STREAMING))
@@ -300,6 +307,7 @@ internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, 
         val history = messages.map(::presentation).distinctBy { it.messageId }.map { message ->
             if (redaction && message.role == MessageRole.USER) message.copy(metadata = message.metadata?.deepCopy()?.apply { remove("display_label") }) else message
         }
+        val existingFeedback = state.messages.associateBy { it.serverMessageId ?: it.messageId }
         val existingSurveys = state.messages.mapNotNull { m -> m.transferSurvey?.let { m.messageId to it } }.toMap()
         val durableTransferIds = history.mapNotNull { ContactCenterContracts.identity(it) }.toSet()
         val historyIds = history.map { it.messageId }.toSet()
@@ -319,7 +327,8 @@ internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, 
         state = state.copy(messages = merged.takeLast(500).map { message ->
             val selection = message.actions?.string("renderId")?.let { selections[it] }
             val retainedSurvey = existingSurveys[message.messageId]
-            val preserved = if (retainedSurvey != null) message.copy(transferSurvey = retainedSurvey) else message
+            val preserved = retainFeedbackResponses(existingFeedback[message.serverMessageId ?: message.messageId],
+                if (retainedSurvey != null) message.copy(transferSurvey = retainedSurvey) else message)
             if (selection == null) preserved else preserved.copy(actions = message.actions.deepCopy().apply {
                 add("submitted", selection.deepCopy().apply { remove("renderId"); if (string("status") == null) addProperty("status", "submitted") })
             })
@@ -335,9 +344,10 @@ internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, 
             }
         }
     }
-    private fun fingerprint(m: ChatMessage) = "${m.role}:${m.text}:${m.richContent}:${m.actions}:${m.attachments}:${m.agentLink}:${m.transferSurvey?.artemisSessionId}"
+    private fun fingerprint(m: ChatMessage) = "${m.role}:${m.text}:${m.richContent}:${m.actions}:${m.attachments}:${m.agentLink}:${m.transferSurvey?.artemisSessionId}:${m.authorization?.let { m.messageId }}"
     private fun upsert(message: ChatMessage) {
-        val found = state.messages.any { it.messageId == message.messageId }
-        state = state.copy(messages = (if (found) state.messages.map { if (it.messageId == message.messageId) message else it } else state.messages + message).takeLast(500))
+        val previous = state.messages.find { it.messageId == message.messageId }
+        val next = retainFeedbackResponses(previous, message)
+        state = state.copy(messages = (if (previous != null) state.messages.map { if (it.messageId == message.messageId) next else it } else state.messages + next).takeLast(500))
     }
 }

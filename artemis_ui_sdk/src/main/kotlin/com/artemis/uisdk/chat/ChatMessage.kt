@@ -28,6 +28,8 @@ data class ChatMessage(
     val attachments: List<AttachmentRef> = emptyList(),
     val agentLink: AgentLink? = null,
     val transferSurvey: AgentTransferSurvey? = null,
+    val feedbackResponses: Map<String, FeedbackResponseState> = emptyMap(),
+    val authorization: AuthorizationCard? = null,
 
 )
 
