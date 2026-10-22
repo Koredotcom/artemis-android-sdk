@@ -1,10 +1,10 @@
-# Android service authorization workflows
+# Service authorization workflows
 
 ## Scope
 
-This increment adds opt-in native handling of the supplied Web SDK's preflight and just-in-time (JIT) service authorization contracts. These workflows authorize Runtime to use a connector such as Calendar or CRM. They are separate from the existing SDK bootstrap/token-refresh connection flow and from signing the user into the host app.
+The SDK can display Runtime preflight and just-in-time (JIT) authorization requests for services such as Calendar or CRM. These workflows authorize Runtime to use a connector; they are separate from the SDK connection flow and from signing in to the host app.
 
-Enable `ArtemisFeatureConfig(authentication = true)` or YAML `features.enable_authentication: true`. It is enabled in the sample and defaults to false for existing hosts. An older Runtime that never emits these events never activates this path. This increment adds no endpoints, server changes, dependencies, automatic browser launches or automatic chat-message replay.
+Enable `ArtemisFeatureConfig(authentication = true)` or YAML `features.enable_authentication: true`. The setting defaults to false. Authorization cards appear when Runtime sends supported authorization events.
 
 ## Mobile flow
 
@@ -44,17 +44,7 @@ For a fully custom host UI, `handle.state` exposes `ChatMessage.authorization`. 
 ## State and compatibility
 
 - Requests are scoped to a handle, Runtime session, message, row and one-use request ID. Duplicate/stale host completions are ignored. Changed authorization URLs invalidate an in-progress launch. Only Runtime can mark a row Connected; a late local browser callback cannot downgrade it.
-- Minimize/reopen and view recreation retain in-memory cards and outstanding host requests in the handle-owned view model. Ending/changing the conversation clears requests. URLs and OAuth state are not written to preferences, logs or history by this increment. Process death requires Runtime to reissue current authorization requirements; stale historical cards are not made actionable.
+- Minimize/reopen and view recreation retain in-memory cards and outstanding host requests in the handle-owned view model. Ending/changing the conversation clears requests. The SDK does not write authorization URLs or OAuth state to preferences, logs or chat history. After process death, Runtime must reissue current authorization requirements before the cards become actionable again.
 - Disconnect changes pending confirmation/cancellation to a recoverable failed state. It does not replay auth responses. A 30-second local confirmation wait restores explicit retry; it never sends an automatic cancellation. `timeoutMs` from a challenge is informational, matching Web's lack of a client auto-cancel timer. Expiry/cancellation authority remains with Runtime.
 - Preflight updates reuse the active card; `presentation: append` creates a new one and disables the replaced card. Requirements removed by an authoritative update are treated as satisfied, matching Web. Each incoming requirement list accepts at most 50 entries; a merged preflight card accepts 100 rows and a JIT card 50. Malformed, duplicate or oversized requirement sets reject that frame. At most 50 browser/host launches and 100 local authorization operations can be outstanding per handle.
 - Text sending, attachments, feedback and transferred-agent surveys keep their existing routes. The client does not globally lock the composer because a service needs authorization; Runtime decides which operations wait. Existing connection defaults and the 40dp composer are preserved.
-
-## Contract compatibility and acceptance
-
-The supplied repository's golden `consent_satisfy` fixture declares `{ requirementKey, status }`, while the actual `/ws/sdk` handler currently requires `authProfileRef` plus its bound session and rechecks credentials. Android uses that handler's supported completion shape. It does **not** send a generic `consent_satisfy(status: cancelled)`: that handler does not implement cancellation from that field. Mid-turn preflight cancellation must have a matching Runtime paused-execution row ID, as required by the Web UI's `auth_response` convention. Rejection remains recoverable; it must not be reported as a successful cancellation. No Runtime files were edited.
-
-The debug-only gallery includes focused `auth-preflight` and `auth-challenge` examples (`--es example auth-preflight`). Their buttons only show offline toasts; they never open a provider or send socket events.
-
-Implementation checks: sample debug APK, both release AARs, UI/socket lint and compilation of existing UI/socket test sources. No new tests were added or run for this increment, and no live OAuth flow was executed. The earlier 134 passing baseline tests predate these authentication changes.
-
-Live acceptance remains: preflight success, multi-service JIT success, explicit cancellation (including the mid-turn preflight identity contract), denied/expired authorization, browser dismissal, blocked/missing URL, duplicate callback, minimize/reopen, lost connection, process restart and one-time workflow resume. Recheck ordinary connection/text/streaming, attachments and both feedback lanes before release. A configured non-production provider and Runtime workflow are needed for those checks.

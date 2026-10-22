@@ -1,10 +1,19 @@
-# Step 4: Android presentation and host extension points
+# UI customization and host APIs
 
-## Scope
+## Overview
 
-This increment adds local UI configuration and host integration. Branding uses the existing, token-free `widgetConfig` snapshot from SDK init and token refresh. It introduces no endpoint, request schema, socket dependency, refresh timer, or server configuration change. Theme/string/renderer updates do not reconnect, reload history, upload files, or submit actions.
+This guide describes the SDK's presentation options and host extension APIs. Runtime branding uses the `widgetConfig` snapshot supplied during SDK initialization and token refresh. Theme, string, and renderer updates apply to the chat presentation without reconnecting or reloading conversation history.
 
 Existing integrations require no new configuration. Attachment upload visibility still requires all three: the host attachment feature, branding `theme.attachmentButtonEnabled`, and `attachment:write`. The five-file limit and 40dp composer buttons/input minimum height remain in effect.
+
+| Host customization | API |
+| --- | --- |
+| Chat header and composer | `ChatOptions.headerBuilder` and `footerBuilder` |
+| Rich-content templates | `registerTemplateRenderer("carousel" / "list" / "table" / ...)` |
+| Fonts and text styling | `ArtemisTypographyConfig` |
+| Colors and branding | `ArtemisThemeConfig`, `updateTheme`, `setLogoResolver` |
+| Strings and locale | `ArtemisStrings`, `updateStrings` |
+| Welcome message and per-chat identity | `ArtemisUIConfig.welcomeMessage`, `ChatOptions.runtimeUserContext` |
 
 ## Runtime branding
 
@@ -46,12 +55,26 @@ val typography = ArtemisTypographyConfig(
         textView.letterSpacing = 0.01f
     },
 )
-val config = ArtemisUIConfig(connection = connection, typography = typography)
+val config = ArtemisUIConfig(
+    connection = connection,
+    theme = ArtemisThemeConfig(primary = "#0F766E", headerBackground = "#115E59"),
+    typography = typography,
+    welcomeMessage = "Welcome! How can we help?",
+)
 // An open handle can also apply a new typography configuration at runtime.
 handle.updateTypography(typography)
 ```
 
-`theme.font_family` in YAML maps to an Android system family name. Use `ArtemisTypographyConfig` for fonts bundled by the host application.
+Put the font file or Android font-family XML in the host app's `res/font/` directory and load it with `ResourcesCompat.getFont`. The scale must be between `0.5f` and `2f`. Typography is applied to SDK and custom-rendered text; the callback runs on the main thread after the SDK styling pass. `theme.font_family` in YAML maps to an Android system family name. Use `ArtemisTypographyConfig` for bundled fonts.
+
+For example, add `res/font/brand_sans.xml` and the regular/bold font files it references:
+
+```xml
+<font-family xmlns:android="http://schemas.android.com/apk/res/android">
+    <font android:font="@font/brand_sans_regular" android:fontWeight="400" />
+    <font android:font="@font/brand_sans_bold" android:fontWeight="700" />
+</font-family>
+```
 
 The app module demonstrates this with the 29LT Bukra regular and bold font files copied from the Flutter example. `MainActivity` loads `R.font.bukra` and registers client renderers for the `carousel`, `list`, and `table` rich-content keys in `CustomTemplateInjection`. Each renderer reads its own `request.payload`; the SDK uses the returned view in place of its built-in template. If a payload does not match the sample renderer's expected structure, it returns null and the SDK falls back to its built-in renderer.
 
@@ -77,25 +100,54 @@ Pass native view builders in `ChatOptions` to replace the SDK header, composer, 
 handle.showChat(activity, ChatOptions(
     title = "Support",
     headerBuilder = ArtemisChatHeaderBuilder { context, header ->
-        android.widget.Button(context).apply {
-            text = header.title
-            setOnClickListener { header.onClose() }
+        android.widget.LinearLayout(context).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            addView(android.widget.TextView(context).apply {
+                text = header.title
+            }, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+            addView(android.widget.Button(context).apply {
+                text = "Minimize"
+                setOnClickListener { header.onMinimize() }
+            })
+            addView(android.widget.Button(context).apply {
+                text = "Close"
+                setOnClickListener { header.onClose() }
+            })
         }
     },
     footerBuilder = ArtemisChatFooterBuilder { context, footer ->
         android.widget.LinearLayout(context).apply {
-            orientation = android.widget.LinearLayout.HORIZONTAL
-            addView(footer.input, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
-            addView(android.widget.Button(context).apply {
-                text = "Send"
-                setOnClickListener { footer.onSend() }
+            orientation = android.widget.LinearLayout.VERTICAL
+            addView(footer.attachmentPreview, android.widget.LinearLayout.LayoutParams(-1, -2))
+            addView(android.widget.LinearLayout(context).apply {
+                orientation = android.widget.LinearLayout.HORIZONTAL
+                addView(footer.input, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+                footer.onAttach?.let { attach ->
+                    addView(android.widget.Button(context).apply {
+                        text = "+"
+                        contentDescription = "Attach file"
+                        setOnClickListener { attach() }
+                    })
+                }
+                addView(android.widget.Button(context).apply {
+                    text = "Send"
+                    setOnClickListener { footer.onSend() }
+                })
             })
         }
+    },
+    runtimeUserContext = com.google.gson.JsonObject().apply {
+        addProperty("user_id", "customer-123")
+        add("custom_attributes", com.google.gson.JsonObject().apply {
+            addProperty("membership", "gold")
+        })
     },
 ))
 ```
 
-The header context provides the current title and minimize/close actions. The footer context provides the SDK-owned `EditText` (preserving draft and input behavior), an enabled `StateFlow<Boolean>`, the attachment preview view, and send/optional attach callbacks. A custom footer can collect `enabled` to update its controls. Add `attachmentPreview` to the returned view if the host wants attachment drafts displayed. `ChatOptions.runtimeUserContext` optionally overrides connection user context for that chat, using the socket schema (`user_id` and `custom_attributes`). The app module demonstrates both replacements in `CustomChatheaderFooter`.
+The header context provides the current title and minimize/close actions. The footer context provides the SDK-owned `EditText` (preserving draft and input behavior), an enabled `StateFlow<Boolean>`, the attachment preview view, and send/optional attach callbacks. Include the input in the returned hierarchy; include `attachmentPreview` when users need to see selected files. Collect `enabled` with the host lifecycle to keep custom controls in sync. Omit either builder to keep that SDK-provided view. `runtimeUserContext` uses the socket schema (`user_id` and `custom_attributes`) and overrides the connection context for this chat. The app module has a styled version in `CustomChatheaderFooter.kt`.
+
+The optional host welcome message can also be provided at initialization with `ArtemisUIConfig.welcomeMessage`; Runtime `widgetConfig.welcomeMessage` takes precedence. `ChatOptions.runtimeUserContext` is per chat, so it can vary between chats opened from the same handle.
 
 ## Strings and localization
 
@@ -136,7 +188,21 @@ artemis_ui_sdk:
 
 ## Custom template renderers
 
-Registration is optional and scoped to the handle. Names match `richContent` keys or canonical `renderables[].name`; built-in names can also be overridden. The existing protocol parser still decides which payloads become rich content. Canonical unknown renderables are the supported path for new template names.
+Registration is optional and scoped to the handle. Names match `richContent` keys or canonical `renderables[].name`; built-in names can also be overridden. Register only the types you want to replace: for example, a `carousel` renderer replaces the carousel portion while other rich-content types keep their built-in renderers. Common names include `carousel`, `list`, `table`, and `quick_replies`. The existing protocol parser still decides which payloads become rich content. Canonical unknown renderables are the supported path for new template names.
+
+Register renderers before opening chat. Return an unattached Android view for each payload type:
+
+```kotlin
+val customTemplateRegistrations = listOf(
+    handle.registerTemplateRenderer("carousel", ArtemisTemplateRenderer(::renderCarousel)),
+    handle.registerTemplateRenderer("list", ArtemisTemplateRenderer(::renderList)),
+    handle.registerTemplateRenderer("table", ArtemisTemplateRenderer(::renderTable)),
+    handle.registerTemplateRenderer("quick_replies", ArtemisTemplateRenderer(::renderQuickReplies)),
+)
+// Keep the AutoCloseable registrations for the handle lifetime. Close one to restore that built-in renderer.
+```
+
+Each `renderCarousel` / `renderList` / `renderTable` function receives an `ArtemisTemplateRequest`. Read that template's data from `request.payload`; use `request.submitAction` for bot actions, `request.loadImage` for rich-content images, and `request.openUrl` for links. The app module includes a complete example that registers carousel, list, and table renderers in `CustomTemplateInjection.kt`.
 
 ```kotlin
 val registration = handle.registerTemplateRenderer("booking_summary") { request ->
@@ -172,12 +238,3 @@ All commands below run on the main thread and require an open handle. A chat mus
 | `endSession()`, `close()`, `showChat()`, `createChatFragment()` | Existing lifecycle controls |
 
 Host action and feedback APIs use the local message ID exposed by `state`; feedback resolves the server ID internally. Snapshot publication reuses unchanged message copies to avoid copying the entire transcript during each upload/stream update. Hosts should treat snapshots as read-only and collect with their lifecycle. `sendText`/`sendComposedMessage` success is local transport acceptance, not proof of server or human-agent delivery. Explicit sending/upload/download/retry commands still make their normal existing requests.
-
-## Build checks for this increment
-
-- Sample debug APK and release SDKs build.
-- UI and socket release lint complete; pre-existing warnings remain.
-- Existing UI/sample unit-test sources compile against the additive APIs.
-- No unit tests or live/device checks run as part of this implementation request.
-
-Suggested acceptance checks before releasing: open/minimize/reopen, text/streaming, scrolling rich cards, five-file upload/retry, branding-disabled attachments, token refresh with unchanged/changed/removed branding, string fallback and invalid format, custom renderer success/null/exception/unregister, unsent native form values during a theme update, and transfer survey submission. Live contact-center/backend acceptance remains separate from this local UI increment.

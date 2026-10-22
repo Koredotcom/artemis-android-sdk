@@ -99,9 +99,9 @@ class MainActivity : AppCompatActivity() {
             }
             handle.showChat(this, ChatOptions(
                 title = chatTitle.ifBlank { "Chat" },
+                headerBuilder = CustomChatheaderFooter.headerBuilder,
                 footerBuilder = CustomChatheaderFooter.footerBuilder,
-            )
-            )
+            ))
         } catch (error: IllegalArgumentException) {
             Toast.makeText(this, error.message ?: "Check the configuration", Toast.LENGTH_LONG).show()
         } catch (error: IllegalStateException) {

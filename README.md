@@ -46,10 +46,10 @@ Add JitPack to your host project's dependency repositories:
 maven { url = uri("https://jitpack.io") }
 ```
 
-Once the `ui-0.0.1` tag has been published successfully on JitPack, add:
+The current JitPack release is `1.0.2`. Add the dependency:
 
 ```groovy
-implementation 'com.github.Koredotcom:artemis-android-sdk:ui-0.0.1'
+implementation 'com.github.Koredotcom:artemis-android-sdk:1.0.2'
 ```
 
 The UI and socket libraries are published together; the sample app is not a Maven artifact. The socket dependency is included transitively, so no separate socket dependency is required in the host app.
@@ -77,7 +77,7 @@ The YAML loader accepts `sdk_configurations.yaml` under the `artemis_ui_sdk` or 
 
 ## Socket dependency status
 
-The UI and sample now use local project dependencies so source changes are exercised together: `:app` → `:artemis_ui_sdk` → `:artemis_socket_sdk`. The previous published baseline was `socket:1.0.1` / `ui:1.0.1`. Release both updated modules together before distributing the new SDK. See [steps 1–5 implementation and regression checks](docs/feature-parity-milestone-1.md).
+The sample builds against the local socket and UI modules together. The current release packages both artifacts at version `1.0.2`; use the aggregate dependency shown above in host apps.
 
 ## Build
 
@@ -89,9 +89,7 @@ The repository targets Android API 24+, compiles against API 36, and uses Java 1
 
 ## JitPack release
 
-`jitpack.yml` selects Java 17 and stages both `:artemis_socket_sdk` and `:artemis_ui_sdk`. The publication
-version follows JitPack's `VERSION` environment variable, defaulting locally to
-`ui-0.0.1`. The release includes an AAR, dependency metadata, and a sources JAR.
+`jitpack.yml` selects Java 17 and stages both `:artemis_socket_sdk` and `:artemis_ui_sdk`. The current published tag is `1.0.2`; JitPack supplies that tag through its `VERSION` environment variable so both artifacts share the release version. Local builds without `VERSION` still default to `ui-0.0.1`. The release includes AARs, dependency metadata, and sources JARs.
 
 Before tagging, run:
 
@@ -99,9 +97,7 @@ Before tagging, run:
 bash gradlew :artemis_ui_sdk:assembleRelease :artemis_ui_sdk:lintRelease :artemis_ui_sdk:publishToMavenLocal :app:assembleDebug
 ```
 
-Review and commit the release files, then create and push the `ui-0.0.1` tag on
-that commit. Look up `Koredotcom/artemis-android-sdk` and `ui-0.0.1` on JitPack and
-confirm the build succeeds before distributing the dependency coordinate.
+For a future release, publish a version tag and confirm the JitPack build succeeds before distributing its dependency coordinate. Keep the UI and socket artifact versions aligned.
 
 Release lint disables only `NullSafeMutableLiveData` because the Lifecycle 2.9
 detector crashes with AGP 8.7's Kotlin analysis API; this SDK uses StateFlow and
@@ -109,33 +105,94 @@ contains no MutableLiveData. Other release lint checks remain enabled.
 
 ## Optional attachments and human-agent chat
 
-The sample enables the attachment and transferred-agent UI. SDK consumers opt in with
-`ArtemisFeatureConfig(attachments = true, contactCenter = true)`; existing defaults keep both disabled.
-The native picker and socket send API allow at most **five files per message**, with per-file progress, cancellation, retry and removal.
-The picker button stays hidden until Runtime branding explicitly enables `widgetConfig.theme.attachmentButtonEnabled` and the session grants `attachment:write`; a socket connection alone does not show it.
-The increment includes streamed uploads with progress/cancel/retry, scoped downloads, transfer text/typing,
-external forms and dedicated post-transfer survey acknowledgements. Agent calls/video/screen sharing remain later work.
+The sample enables attachments and transferred-agent chat. Host apps can opt in with
+`ArtemisFeatureConfig(attachments = true, contactCenter = true)`. The attachment picker requires Runtime branding to enable `widgetConfig.theme.attachmentButtonEnabled` and the session to grant `attachment:write`. Up to five files can be sent per message. See the [attachments and transferred-agent guide](docs/attachments-contact-center.md) for configuration and behavior.
 
-Run `bash gradlew verifyParityBaseline` to build, lint and run the complete SDK/sample regression gate.
-See [configuration, behavior and live acceptance scenarios](docs/attachments-contact-center.md), including the
-Runtime replay requirement for surveys missed while offline. Publish both modules at the same release version.
+### Customizing the chat UI
 
-### Runtime appearance, strings and host renderers
+The host can supply bundled fonts, replace the header or composer, and register renderers for selected rich-content types. Pass fonts through `ArtemisTypographyConfig`, register templates on the handle, and pass header/footer builders in `ChatOptions`:
 
-Step 4 adds branding from existing SDK init/refresh responses, `ArtemisStrings`, runtime theme updates, local logo resolvers, custom template renderers, and native host commands/state. No additional branding API call is introduced. See [customization and host APIs](docs/customization-and-host-apis.md) for supported fields, precedence, examples and validation scope.
+This Activity example assumes a configured `connection` and host renderer functions (`renderCarousel`, `renderList`, `renderTable`, and `renderQuickReplies`). Imports are omitted for readability.
 
-Hosts can replace the native header and composer per chat with `ChatOptions.headerBuilder` and `ChatOptions.footerBuilder`. The sample app uses custom views for both. See [customization and host APIs](docs/customization-and-host-apis.md#custom-chat-header-and-footer) for the builder contract.
+```kotlin
+val handle = ArtemisUI.initialize(
+    applicationContext,
+    ArtemisUIConfig(
+        connection = connection,
+        theme = ArtemisThemeConfig(primary = "#0F766E"),
+        typography = ArtemisTypographyConfig(
+            typeface = ResourcesCompat.getFont(applicationContext, R.font.brand_sans),
+            textSizeScale = 1.05f,
+        ),
+        welcomeMessage = "Welcome! How can we help?",
+    ),
+)
 
-Android also supports host typography (`ArtemisTypographyConfig`), a per-chat `runtimeUserContext`, and the Runtime `widgetConfig.welcomeMessage` empty-state message. Custom template requests include form draft and submission callbacks plus feedback state and callbacks. See [customization and host APIs](docs/customization-and-host-apis.md) for examples.
+// Define renderCarousel / renderList / renderTable / renderQuickReplies to
+// return unattached Views built from each request.payload.
+val templateRegistrations = listOf(
+    handle.registerTemplateRenderer("carousel", ArtemisTemplateRenderer(::renderCarousel)),
+    handle.registerTemplateRenderer("list", ArtemisTemplateRenderer(::renderList)),
+    handle.registerTemplateRenderer("table", ArtemisTemplateRenderer(::renderTable)),
+    handle.registerTemplateRenderer("quick_replies", ArtemisTemplateRenderer(::renderQuickReplies)),
+)
 
-### Advanced feedback and remaining parity
+handle.showChat(this, ChatOptions(
+    title = "Support",
+    headerBuilder = ArtemisChatHeaderBuilder { context, header ->
+        android.widget.LinearLayout(context).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            addView(android.widget.TextView(context).apply { text = header.title },
+                android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+            addView(android.widget.Button(context).apply {
+                text = "Minimize"
+                setOnClickListener { header.onMinimize() }
+            })
+            addView(android.widget.Button(context).apply {
+                text = "Close"
+                setOnClickListener { header.onClose() }
+            })
+        }
+    },
+    footerBuilder = ArtemisChatFooterBuilder { context, footer ->
+        android.widget.LinearLayout(context).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            addView(footer.attachmentPreview,
+                android.widget.LinearLayout.LayoutParams(-1, -2))
+            addView(android.widget.LinearLayout(context).apply {
+                orientation = android.widget.LinearLayout.HORIZONTAL
+                addView(footer.input,
+                    android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+                footer.onAttach?.let { attach ->
+                    addView(android.widget.Button(context).apply {
+                        text = "+"
+                        setOnClickListener { attach() }
+                    })
+                }
+                addView(android.widget.Button(context).apply {
+                    text = "Send"
+                    setOnClickListener { footer.onSend() }
+                })
+            })
+        }
+    },
+    runtimeUserContext = com.google.gson.JsonObject().apply {
+        addProperty("user_id", "customer-123")
+        add("custom_attributes", com.google.gson.JsonObject().apply {
+            addProperty("membership", "gold")
+        })
+    },
+))
+```
 
-Advanced assistant surveys are opt-in with `features.advancedFeedback = true` (enabled in the sample). See [advanced feedback](docs/advanced-feedback.md) for payloads and host APIs, and the [remaining parity plan](docs/pending-parity-plan.md) for the staged delivery sequence and acceptance criteria.
+Use a font in the host app's `res/font/` resources and refer to its generated ID, such as `R.font.brand_sans`. A template renderer replaces only its matching `richContent` type; unregistered types keep the SDK renderer. In a renderer, use `request.submitAction(...)` for bot actions and `request.loadImage(...)` / `request.openUrl(...)` for images and links. Keep the returned registrations if you want to close them later and restore a built-in renderer. The custom footer receives the SDK-owned input and attachment preview; collect `footer.enabled` with the host lifecycle to keep send controls in sync. The sample app contains full carousel, list, and table renderers in [CustomTemplateInjection.kt](app/src/main/java/com/artemis/uisdk/sample/CustomTemplateInjection.kt) and custom chrome in [CustomChatheaderFooter.kt](app/src/main/java/com/artemis/uisdk/sample/CustomChatheaderFooter.kt).
 
-### Native template field coverage
+Other host options include `ArtemisThemeConfig` / `updateTheme`, `ArtemisStrings` / `updateStrings`, a local `ArtemisLogoResolver`, and per-chat `ChatOptions.runtimeUserContext`. See [customization and host APIs](docs/customization-and-host-apis.md) for precedence, localization, renderer callbacks, and complete examples.
 
-See [native template parity](docs/template-parity.md) for form/action submissions, optional presentation fields, Markdown/channel fallbacks, offline gallery examples, native bounds and acceptance status.
+### Advanced feedback
+
+Advanced assistant surveys are opt-in with `features.advancedFeedback = true` (enabled in the sample). See [advanced feedback](docs/advanced-feedback.md) for supported payloads and host APIs.
 
 ### Service authorization
 
-Opt in with `features.authentication = true` (enabled in the sample) for preflight/JIT authorization cards, Android system-browser or host-owned sign-in launch, explicit check/cancel, and Runtime-confirmed states. See [authentication workflows](docs/authentication-workflows.md) for host APIs, mobile return behavior, Runtime contract compatibility and pending live acceptance checks.
+Opt in with `features.authentication = true` (enabled in the sample) for preflight/JIT authorization cards, Android system-browser or host-owned sign-in launch, explicit check/cancel, and Runtime-confirmed states. See [authentication workflows](docs/authentication-workflows.md) for host APIs and mobile behavior.
