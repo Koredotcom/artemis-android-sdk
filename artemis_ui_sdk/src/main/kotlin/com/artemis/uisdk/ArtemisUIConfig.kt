@@ -1,6 +1,7 @@
 package com.artemis.uisdk
 
 import android.content.Context
+import android.graphics.Typeface
 import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
 import org.yaml.snakeyaml.constructor.SafeConstructor
@@ -121,6 +122,8 @@ class ArtemisUIConfig @JvmOverloads constructor(
     val attachment: ArtemisAttachmentConfig = ArtemisAttachmentConfig(),
     val strings: ArtemisStrings = ArtemisStrings(),
     val logoResolver: ArtemisLogoResolver? = null,
+    val typography: ArtemisTypographyConfig = ArtemisTypographyConfig(),
+    val welcomeMessage: String? = null,
 ) {
     init {
         val uri = runCatching { URI(connection.endpoint) }.getOrNull()
@@ -274,6 +277,10 @@ object ArtemisConfigLoader {
                     localeTag = strings.readString("locale"),
                 )
             },
+            typography = theme.readString("font_family")?.let { family ->
+                ArtemisTypographyConfig(typeface = Typeface.create(family, Typeface.NORMAL))
+            } ?: ArtemisTypographyConfig(),
+            welcomeMessage = chat.readString("welcome_message"),
             theme = ArtemisThemeConfig(
                 mode = if (theme.readBoolean(
                         "dark_mode",

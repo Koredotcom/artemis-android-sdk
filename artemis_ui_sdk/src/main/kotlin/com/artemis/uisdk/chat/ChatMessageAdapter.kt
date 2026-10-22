@@ -108,7 +108,8 @@ internal class ChatMessageAdapter(
     private var presentation = handle?.presentation?.value
     fun updatePresentation(value: com.artemis.uisdk.ArtemisPresentation) {
         val previous = presentation
-        if (previous?.branding?.theme == value.branding.theme && previous.strings === value.strings && previous.rendererRevision == value.rendererRevision) return
+        if (previous?.branding?.theme == value.branding.theme && previous.strings === value.strings &&
+            previous.typography == value.typography && previous.rendererRevision == value.rendererRevision) return
         presentation = value
         theme = value.branding.theme
         templates.updateTheme(theme)
@@ -350,6 +351,7 @@ internal class ChatMessageAdapter(
                 )
             )
         }
+        presentation?.typography?.applyTo(holder.messageRowLayout)
         holder.boundPresentation = presentationRevision
         holder.boundMessage = message
         holder.boundWidth = availableRowWidth

@@ -23,6 +23,10 @@ import com.artemis.uisdk.R
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.combine
 import com.artemis.uisdk.ArtemisPresentation
+import com.artemis.uisdk.ArtemisChatHeaderContext
+import com.artemis.uisdk.ArtemisChatFooterContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class ArtemisChatFragment : Fragment() {
     companion object {
@@ -58,6 +62,11 @@ class ArtemisChatFragment : Fragment() {
     private var submittedMessages: List<ChatMessage>? = null
     private var wasMinimized = false
     private var appliedPresentation: ArtemisPresentation? = null
+    private var defaultHeaderView: View? = null
+    private var defaultFooterView: View? = null
+    private var customHeaderView: View? = null
+    private var customHeaderTitle: String? = null
+    private val customFooterEnabled = MutableStateFlow(false)
     private val chatTitle: String get() = arguments?.getString(ARG_CHAT_TITLE) ?: "Chat"
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -99,6 +108,8 @@ class ArtemisChatFragment : Fragment() {
         val primaryColor = color(artemisUiHandle.config.theme.primary, Color.rgb(37, 99, 235))
         val chatRootView = inflater.inflate(R.layout.artemis_fragment_chat, container, false)
         artemisUiHandle.config.theme.background?.let { chatRootView.setBackgroundColor(color(it, Color.WHITE)) }
+        defaultHeaderView = chatRootView.findViewById(R.id.artemis_header)
+        defaultFooterView = chatRootView.findViewById(R.id.artemis_composer)
         chatRootView.findViewById<View>(R.id.artemis_header).setBackgroundColor(primaryColor)
         chatRootView.findViewById<TextView>(R.id.artemis_title).text = chatTitle
         chatRootView.findViewById<TextView>(R.id.artemis_avatar).text =
@@ -116,6 +127,8 @@ class ArtemisChatFragment : Fragment() {
             setOnClickListener { artemisChatViewModel.retry() }
         }
         errorView = chatRootView.findViewById(R.id.artemis_error)
+        // Capture references to the SDK header's status view before replacing that header.
+        installCustomHeader(chatTitle)
         attachmentStrip = AttachmentComposerStrip(chatRootView, primaryColor,
             artemisChatViewModel::cancelAttachmentUpload, artemisChatViewModel::retryAttachment, artemisChatViewModel::removePendingAttachment)
         attachButton = chatRootView.findViewById<android.widget.ImageButton>(R.id.artemis_attach).apply {
@@ -143,6 +156,7 @@ class ArtemisChatFragment : Fragment() {
         messageInputEditText.setOnEditorActionListener { _, editorActionIdentifier, _ ->
             if (editorActionIdentifier == EditorInfo.IME_ACTION_SEND) { sendCurrentMessage(); true } else false
         }
+        installCustomFooter()
         chatMessagesRecyclerView = chatRootView.findViewById<RecyclerView>(R.id.artemis_messages).apply {
             layoutManager = LinearLayoutManager(context).also { it.stackFromEnd = true }
             itemAnimator = null
@@ -194,6 +208,55 @@ class ArtemisChatFragment : Fragment() {
         return chatRootView
     }
 
+    private fun installCustomHeader(title: String) {
+        val builder = artemisUiHandle.activeChatOptions.headerBuilder ?: return
+        if (customHeaderTitle == title && customHeaderView != null) return
+        val current = customHeaderView ?: defaultHeaderView ?: return
+        val parent = current.parent as? ViewGroup ?: return
+        val replacement = builder.build(requireContext(), ArtemisChatHeaderContext(
+            title = title,
+            onMinimize = {
+                wasMinimized = true
+                artemisUiHandle.minimizeChat()
+                dismissChat()
+            },
+            onClose = { closeChat("CLOSE") },
+        ))
+        require(replacement.parent == null) { "Custom chat header must be an unattached view" }
+        replaceChild(parent, current, replacement)
+        customHeaderView = replacement
+        customHeaderTitle = title
+    }
+
+    private fun installCustomFooter() {
+        val builder = artemisUiHandle.activeChatOptions.footerBuilder ?: return
+        val old = defaultFooterView ?: return
+        val parent = old.parent as? ViewGroup ?: return
+        val input = messageInputEditText
+        val preview = old.findViewById<View>(R.id.artemis_attachment_preview)
+        (input.parent as? ViewGroup)?.removeView(input)
+        (preview.parent as? ViewGroup)?.removeView(preview)
+        val replacement = builder.build(requireContext(), ArtemisChatFooterContext(
+            input = input,
+            enabled = customFooterEnabled.asStateFlow(),
+            attachmentPreview = preview,
+            onSend = ::sendCurrentMessage,
+            onAttach = if (artemisChatViewModel.attachmentsEnabled) {
+                { filePicker.launch(artemisUiHandle.config.attachment.allowedMimeTypes.toTypedArray()) }
+            } else null,
+        ))
+        require(replacement.parent == null) { "Custom chat footer must be an unattached view" }
+        replaceChild(parent, old, replacement)
+        defaultFooterView = null
+    }
+
+    private fun replaceChild(parent: ViewGroup, old: View, replacement: View) {
+        val index = parent.indexOfChild(old)
+        val params = old.layoutParams
+        parent.removeViewAt(index)
+        parent.addView(replacement, index, params)
+    }
+
     override fun onStart() {
         super.onStart()
         if (::artemisChatViewModel.isInitialized) artemisChatViewModel.start()
@@ -229,6 +292,7 @@ class ArtemisChatFragment : Fragment() {
                     typingIndicatorTextView.visibility = if (artemisUiHandle.config.features.typingIndicator && (chatUiState.isTyping || chatUiState.initialAssistantMessagePending)) View.VISIBLE else View.GONE
                     retryConnectionButton.visibility = if (chatUiState.connectionStatus in setOf(ConnectionStatus.DISCONNECTED, ConnectionStatus.FAILED)) View.VISIBLE else View.GONE
                     val canSendMessages = chatUiState.connectionStatus == ConnectionStatus.CONNECTED && !chatUiState.isOffline
+                    customFooterEnabled.value = canSendMessages
                     messageInputEditText.isEnabled = canSendMessages
                     attachButton.visibility = if (artemisChatViewModel.attachmentsEnabled) View.VISIBLE else View.GONE
                     attachButton.isEnabled = canSendMessages && chatUiState.attachmentDrafts.size < artemisChatViewModel.maxAttachmentsPerMessage
@@ -266,29 +330,34 @@ class ArtemisChatFragment : Fragment() {
         val headerBackground = color(theme.headerBackground, primary)
         val headerText = color(theme.headerText, if (androidx.core.graphics.ColorUtils.calculateLuminance(headerBackground) > .5) Color.BLACK else Color.WHITE)
         root.setBackgroundColor(color(theme.background, requireContext().getColor(R.color.artemis_background)))
-        root.findViewById<View>(R.id.artemis_header).setBackgroundColor(headerBackground)
         val title = value.branding.assistantName ?: chatTitle
-        root.findViewById<TextView>(R.id.artemis_title).apply { text = title; setTextColor(headerText) }
-        connectionStatusTextView.setTextColor(headerText)
-        val avatar = root.findViewById<TextView>(R.id.artemis_avatar)
-        avatar.text = title.trim().take(1).uppercase().ifBlank { "A" }
-        avatar.setTextColor(headerText)
-        val logo = root.findViewById<android.widget.ImageView>(R.id.artemis_logo)
-        // Resolvers are host-controlled local asset lookup. No image HTTP request is made here.
-        if (appliedPresentation == null || appliedPresentation?.branding?.logoUrl != value.branding.logoUrl || appliedPresentation?.logoResolver !== value.logoResolver) {
-            val drawable = value.branding.logoUrl?.let { url -> runCatching { value.logoResolver?.resolve(requireContext(), url) }.getOrNull() }
-            logo.setImageDrawable(drawable)
-            logo.visibility = if (drawable == null) View.GONE else View.VISIBLE
-            avatar.visibility = if (drawable == null) View.VISIBLE else View.GONE
-        }
-        listOf(R.id.artemis_close to R.string.artemis_close, R.id.artemis_minimize to R.string.artemis_minimize).forEach { (id, text) ->
-            root.findViewById<android.widget.ImageButton>(id).apply {
-                imageTintList = android.content.res.ColorStateList.valueOf(headerText); contentDescription = label(text)
+        installCustomHeader(title)
+        defaultHeaderView?.let { header ->
+            header.setBackgroundColor(headerBackground)
+            header.findViewById<TextView>(R.id.artemis_title).apply { text = title; setTextColor(headerText) }
+            connectionStatusTextView.setTextColor(headerText)
+            val avatar = header.findViewById<TextView>(R.id.artemis_avatar)
+            avatar.text = title.trim().take(1).uppercase().ifBlank { "A" }
+            avatar.setTextColor(headerText)
+            val logo = header.findViewById<android.widget.ImageView>(R.id.artemis_logo)
+            // Resolvers are host-controlled local asset lookup. No image HTTP request is made here.
+            if (appliedPresentation == null || appliedPresentation?.branding?.logoUrl != value.branding.logoUrl || appliedPresentation?.logoResolver !== value.logoResolver) {
+                val drawable = value.branding.logoUrl?.let { url -> runCatching { value.logoResolver?.resolve(requireContext(), url) }.getOrNull() }
+                logo.setImageDrawable(drawable)
+                logo.visibility = if (drawable == null) View.GONE else View.VISIBLE
+                avatar.visibility = if (drawable == null) View.VISIBLE else View.GONE
+            }
+            listOf(R.id.artemis_close to R.string.artemis_close, R.id.artemis_minimize to R.string.artemis_minimize).forEach { (id, text) ->
+                header.findViewById<android.widget.ImageButton>(id).apply {
+                    imageTintList = android.content.res.ColorStateList.valueOf(headerText); contentDescription = label(text)
+                }
             }
         }
-        root.findViewById<View>(R.id.artemis_composer).setBackgroundColor(color(theme.composerBackground, requireContext().getColor(R.color.artemis_background)))
         val border = color(theme.border, requireContext().getColor(R.color.artemis_border))
-        root.findViewById<View>(R.id.artemis_composer_divider).setBackgroundColor(border)
+        defaultFooterView?.apply {
+            setBackgroundColor(color(theme.composerBackground, requireContext().getColor(R.color.artemis_background)))
+            findViewById<View>(R.id.artemis_composer_divider).setBackgroundColor(border)
+        }
         (messageInputEditText.background.mutate() as? android.graphics.drawable.GradientDrawable)?.apply {
             setColor(color(theme.surface, requireContext().getColor(R.color.artemis_background)))
             setStroke(convertDpToPixels(1).coerceAtLeast(1), border)
@@ -300,14 +369,23 @@ class ArtemisChatFragment : Fragment() {
         sendMessageButton.imageTintList = android.content.res.ColorStateList.valueOf(foreground)
         sendMessageButton.contentDescription = label(R.string.artemis_send)
         attachButton.imageTintList = android.content.res.ColorStateList.valueOf(color(theme.composerText ?: theme.text, requireContext().getColor(R.color.artemis_text)))
-        root.findViewById<TextView>(R.id.artemis_empty_title).apply { text = label(R.string.artemis_empty_title); setTextColor(color(theme.text, requireContext().getColor(R.color.artemis_text))) }
-        root.findViewById<TextView>(R.id.artemis_empty_body).apply { text = label(R.string.artemis_empty_body); setTextColor(color(theme.mutedText, requireContext().getColor(R.color.artemis_muted))) }
+        val welcome = value.branding.welcomeMessage?.trim()?.takeIf(String::isNotEmpty)
+        root.findViewById<TextView>(R.id.artemis_empty_title).apply {
+            text = welcome ?: label(R.string.artemis_empty_title)
+            setTextColor(color(theme.text, requireContext().getColor(R.color.artemis_text)))
+        }
+        root.findViewById<TextView>(R.id.artemis_empty_body).apply {
+            text = label(R.string.artemis_empty_body)
+            visibility = if (welcome == null) View.VISIBLE else View.GONE
+            setTextColor(color(theme.mutedText, requireContext().getColor(R.color.artemis_muted)))
+        }
         typingIndicatorTextView.setTextColor(color(theme.mutedText, requireContext().getColor(R.color.artemis_muted)))
         retryConnectionButton.text = label(R.string.artemis_retry)
         retryConnectionButton.setTextColor(primary)
         errorView.setTextColor(color(theme.text, requireContext().getColor(R.color.artemis_text)))
         attachmentStrip.updatePresentation(primary, value.strings)
         chatMessageAdapter.updatePresentation(value)
+        value.typography.applyTo(root)
         appliedPresentation = value
     }
 

@@ -50,8 +50,14 @@ class ArtemisUiHandle internal constructor(
 ) : AutoCloseable {
     internal val handleIdentifier: String = UUID.randomUUID().toString()
     private var hostTheme = config.theme
+    private var hostTypography = config.typography
     private var runtimeWidget: JsonObject? = null
-    private val mutablePresentation = MutableStateFlow(ArtemisPresentation(resolveBranding(hostTheme, null), config.strings, logoResolver = config.logoResolver))
+    private val mutablePresentation = MutableStateFlow(ArtemisPresentation(
+        resolveBranding(hostTheme, null, config.welcomeMessage),
+        config.strings,
+        typography = hostTypography,
+        logoResolver = config.logoResolver,
+    ))
     internal val presentation = mutablePresentation.asStateFlow()
     private val mutableBranding = MutableStateFlow(presentation.value.branding)
     val brandingUpdates = mutableBranding.asStateFlow()
@@ -95,6 +101,12 @@ class ArtemisUiHandle internal constructor(
         mutablePresentation.value = presentation.value.copy(strings = strings)
     }
 
+    @MainThread fun updateTypography(typography: ArtemisTypographyConfig) {
+        checkMainThread()
+        hostTypography = typography
+        mutablePresentation.value = presentation.value.copy(typography = typography)
+    }
+
     @MainThread fun setLogoResolver(resolver: ArtemisLogoResolver?) {
         checkMainThread()
         mutablePresentation.value = presentation.value.copy(logoResolver = resolver)
@@ -123,9 +135,9 @@ class ArtemisUiHandle internal constructor(
         updateBranding()
     }
     private fun updateBranding() {
-        val next = resolveBranding(hostTheme, runtimeWidget)
-        if (branding == next) return
-        mutablePresentation.value = presentation.value.copy(branding = next)
+        val next = resolveBranding(hostTheme, runtimeWidget, config.welcomeMessage)
+        if (branding == next && presentation.value.typography == hostTypography) return
+        mutablePresentation.value = presentation.value.copy(branding = next, typography = hostTypography)
         mutableBranding.value = next
     }
     private fun bumpRendererRevision() {
@@ -186,19 +198,30 @@ class ArtemisUiHandle internal constructor(
     private val eventListeners = CopyOnWriteArrayList<ArtemisUiListener>()
     @Volatile internal var isChatOpen = false
     internal var isMinimized = false
+    internal var activeChatOptions: ChatOptions = ChatOptions()
     internal var chatViewModel: ArtemisChatViewModel? = null
     // Opt-in cached identity is scoped by endpoint, project, channel, key hash and user; credentials are not stored.
     private val sessionCache = if (config.connection.clientSessionIdentifier) appContext.getSharedPreferences("artemis.sdk.sessions", Context.MODE_PRIVATE) else null
-    private val sessionCacheKey = run {
+    private fun sessionCacheKey(userContext: JsonObject?): String {
         val c = config.connection
-        val scope = listOf(c.endpoint.trimEnd('/'), c.projectId, c.channelId ?: c.channelName ?: c.deploymentSlug, c.apiKey, c.userContext?.get("userId")?.toString()).joinToString("\u0000")
-        java.security.MessageDigest.getInstance("SHA-256").digest(scope.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        // Preserve the historical key for callers that configure user context once at initialization.
+        val userScope = if (activeChatOptions.runtimeUserContext == null) {
+            c.userContext?.get("userId")?.toString()
+        } else userContext?.toString()
+        val scope = listOf(c.endpoint.trimEnd('/'), c.projectId, c.channelId ?: c.channelName ?: c.deploymentSlug, c.apiKey, userScope).joinToString("\u0000")
+        return java.security.MessageDigest.getInstance("SHA-256").digest(scope.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
-    internal val clientSessionIdentifier: String = sessionCache?.getString(sessionCacheKey, null)?.takeIf { it.matches(Regex("csid_[a-f0-9]{32}")) }
-        ?: ("csid_" + UUID.randomUUID().toString().replace("-", "")).also { sessionCache?.edit()?.putString(sessionCacheKey, it)?.apply() }
-    internal val requestsNewSession: Boolean get() = sessionCache?.getBoolean("$sessionCacheKey:new", false) == true
-    internal fun requestNewSession() { sessionCache?.edit()?.putBoolean("$sessionCacheKey:new", true)?.apply() }
-    internal fun confirmSession() { sessionCache?.edit()?.remove("$sessionCacheKey:new")?.apply() }
+    internal val effectiveUserContext: JsonObject? get() =
+        (activeChatOptions.runtimeUserContext ?: config.connection.userContext)?.deepCopy()
+    private fun effectiveSessionCacheKey() = sessionCacheKey(effectiveUserContext)
+    internal val clientSessionIdentifier: String get() {
+        val key = effectiveSessionCacheKey()
+        return sessionCache?.getString(key, null)?.takeIf { it.matches(Regex("csid_[a-f0-9]{32}")) }
+            ?: ("csid_" + UUID.randomUUID().toString().replace("-", "")).also { sessionCache?.edit()?.putString(key, it)?.apply() }
+    }
+    internal val requestsNewSession: Boolean get() = sessionCache?.getBoolean("${effectiveSessionCacheKey()}:new", false) == true
+    internal fun requestNewSession() { sessionCache?.edit()?.putBoolean("${effectiveSessionCacheKey()}:new", true)?.apply() }
+    internal fun confirmSession() { sessionCache?.edit()?.remove("${effectiveSessionCacheKey()}:new")?.apply() }
     @Volatile private var isClosed = false
     @Volatile internal var chatSessionShutdownCallback: ((String) -> Unit)? = null
 
@@ -208,6 +231,7 @@ class ArtemisUiHandle internal constructor(
         val previousMinimized = isMinimized
         isChatOpen = true
         isMinimized = false
+        activeChatOptions = options.copy(runtimeUserContext = options.runtimeUserContext?.deepCopy())
         try {
             activity.startActivity(Intent(activity, ArtemisChatActivity::class.java).apply {
                 putExtra(ArtemisChatActivity.EXTRA_HANDLE_IDENTIFIER, handleIdentifier)
@@ -216,6 +240,7 @@ class ArtemisUiHandle internal constructor(
         } catch (error: RuntimeException) {
             isChatOpen = false
             isMinimized = previousMinimized
+            activeChatOptions = ChatOptions()
             throw error
         }
     }
@@ -225,6 +250,7 @@ class ArtemisUiHandle internal constructor(
         check(!isChatOpen) { "A chat session is already open for this handle" }
         isChatOpen = true
         isMinimized = false
+        activeChatOptions = options.copy(runtimeUserContext = options.runtimeUserContext?.deepCopy())
         return ArtemisChatFragment.create(handleIdentifier, options.title)
     }
 
@@ -240,6 +266,7 @@ class ArtemisUiHandle internal constructor(
 
     internal fun minimizeChat() {
         isChatOpen = false
+        activeChatOptions = ChatOptions()
         isMinimized = true
         emit(ArtemisUiEvent.Minimized)
     }
@@ -283,7 +310,12 @@ class ArtemisUiHandle internal constructor(
     }
 }
 
-data class ChatOptions(val title: String = "Chat")
+data class ChatOptions @JvmOverloads constructor(
+    val title: String = "Chat",
+    val headerBuilder: ArtemisChatHeaderBuilder? = null,
+    val footerBuilder: ArtemisChatFooterBuilder? = null,
+    val runtimeUserContext: JsonObject? = null,
+)
 
 fun interface ArtemisUiListener { fun onEvent(event: ArtemisUiEvent) }
 

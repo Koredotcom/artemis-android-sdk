@@ -28,6 +28,7 @@ import com.artemis.uisdk.ArtemisThemeConfig
 import com.artemis.uisdk.R
 import com.artemis.uisdk.hostSnapshot
 import com.artemis.uisdk.artemisColor
+import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
@@ -60,18 +61,91 @@ internal class DefaultRichTemplateRenderer(
         val owner = handle ?: return false
         val renderer = owner.renderer(name) ?: return false
         val owningModel = owner.chatViewModel
+        val detachedMessage = message.hostSnapshot()
+        val detachedPayload = payload.deepCopy()
+        val payloadObject = detachedPayload.takeIf { it.isJsonObject }?.asJsonObject
+        val renderId = payloadObject?.string("actionRenderId", "renderId")
+            ?: message.actions?.string("renderId")
+        val draftSignature = payloadObject?.deepCopy() ?: JsonObject().apply { add("payload", detachedPayload.deepCopy()) }
+        val draftScope = "custom:$name"
+        val submitId = payloadObject?.string("submitId", "submit_id") ?: "form-submit"
+        val draftValues = (if (owningModel != null && payloadObject != null)
+            owningModel.templateDraft(message, renderId, draftScope, draftSignature)
+        else emptyMap()).toMutableMap()
+        val feedback = payloadObject?.let { callbacks.feedbackState(message, it) }
+            ?: message.feedbackResponses[renderId.orEmpty()]
+            ?: FeedbackResponseState()
+        val actionIds = collectActionIds(detachedPayload)
+        val lockedIds = actionIds.filterTo(linkedSetOf()) { id ->
+            callbacks.isTemplateLocked(message, id, renderId)
+        }
         val view = runCatching {
             renderer.render(
                 com.artemis.uisdk.ArtemisTemplateRequest(
-                    context, message.hostSnapshot(), name, payload.deepCopy(), theme,
-                    { owner.chatViewModel !== owningModel || callbacks.isLocked(message, it) },
-                    { id, value, data, renderId ->
+                    context = context,
+                    message = detachedMessage,
+                    templateName = name,
+                    payload = detachedPayload,
+                    theme = theme,
+                    actionLocked = { owner.chatViewModel !== owningModel || callbacks.isTemplateLocked(message, it, renderId) },
+                    typography = owner.presentation.value.typography,
+                    usedQuickReplyKeys = if (name == "quick_replies") lockedIds else emptySet(),
+                    usedActionButtonIds = if (name == "actions") lockedIds else emptySet(),
+                    formDraftValues = draftValues,
+                    isFormSubmitted = name == "form" && callbacks.isTemplateLocked(message, submitId, renderId),
+                    onFormFieldChanged = { fieldId, value ->
+                        if (owningModel != null && payloadObject != null) {
+                            owningModel.updateTemplateDraft(
+                                message,
+                                renderId,
+                                draftScope,
+                                draftSignature,
+                                draftValues.apply { put(fieldId, value.take(10_000)) }.toMap(),
+                            )
+                        }
+                    },
+                    onFormSubmit = { values ->
+                        if (owner.chatViewModel === owningModel && !owner.isClosed()) {
+                            if (owningModel != null && payloadObject != null) {
+                                owningModel.updateTemplateDraft(
+                                    message,
+                                    renderId,
+                                    draftScope,
+                                    draftSignature,
+                                    values.mapValues { (_, value) -> value.take(10_000) },
+                                )
+                            }
+                            owner.submitAction(message.messageId, submitId, Gson().toJson(values), values, renderId)
+                        }
+                    },
+                    feedbackState = feedback,
+                    isFeedbackSubmitted = feedback.status in setOf(
+                        FeedbackSubmissionStatus.PENDING,
+                        FeedbackSubmissionStatus.SUBMITTED,
+                        FeedbackSubmissionStatus.EXPIRED,
+                    ),
+                    submittedFeedbackRating = feedback.draft.rating.takeIf {
+                        feedback.status == FeedbackSubmissionStatus.SUBMITTED
+                    },
+                    onFeedbackDraft = { draft ->
+                        if (payloadObject != null) callbacks.onFeedbackDraft(message, payloadObject, draft)
+                    },
+                    onFeedbackSubmit = { draft ->
+                        if (payloadObject != null && owner.chatViewModel === owningModel && !owner.isClosed()) {
+                            callbacks.onFeedbackResponse(message, payloadObject, draft)
+                        }
+                    },
+                    imageRequest = { url, onLoaded ->
+                        imageUrl(url)?.let { images.load(it, onLoaded) } ?: onLoaded(null)
+                    },
+                    linkRequest = { url -> openUrl(context, url) },
+                    action = { id, value, data, actionRenderId ->
                         if (owner.chatViewModel === owningModel && !owner.isClosed()) owner.submitAction(
                             message.messageId,
                             id,
                             value,
                             data,
-                            renderId
+                            actionRenderId
                         )
                     },
                 )
@@ -80,6 +154,21 @@ internal class DefaultRichTemplateRenderer(
         if (view.parent != null) return false
         parent.addView(view)
         return true
+    }
+
+    private fun collectActionIds(value: JsonElement): Set<String> = buildSet {
+        fun visit(element: JsonElement) {
+            when {
+                element.isJsonObject -> element.asJsonObject.entrySet().forEach { (key, child) ->
+                    if (key in setOf("id", "actionId", "action_id") && child.isJsonPrimitive && child.asJsonPrimitive.isString) {
+                        child.asString.trim().takeIf(String::isNotEmpty)?.let(::add)
+                    }
+                    visit(child)
+                }
+                element.isJsonArray -> element.asJsonArray.forEach(::visit)
+            }
+        }
+        visit(value)
     }
 
     private val images = TemplateImageLoader()

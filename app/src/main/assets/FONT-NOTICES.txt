@@ -1,0 +1,7 @@
+29LT Bukra Regular and Bold
+
+Source: Flutter/artemis_plugin/artemis_flutter_ui_sdk/example/assets/fonts
+Copyright (c) 2020 29Letters. All rights reserved.
+
+The font files are copied unchanged into app/src/main/res/font for the Android
+example app. The font copyright and licensing terms remain with 29Letters.

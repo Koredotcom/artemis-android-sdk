@@ -7,6 +7,8 @@ import android.graphics.Color
 import android.graphics.drawable.Drawable
 import android.view.View
 import com.artemis.uisdk.chat.ChatMessage
+import com.artemis.uisdk.chat.FeedbackDraft
+import com.artemis.uisdk.chat.FeedbackResponseState
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import java.util.Locale
@@ -45,11 +47,31 @@ class ArtemisTemplateRequest internal constructor(
     val payload: JsonElement,
     val theme: ArtemisThemeConfig,
     val actionLocked: (String) -> Boolean,
+    val typography: ArtemisTypographyConfig = ArtemisTypographyConfig(),
+    val usedQuickReplyKeys: Set<String> = emptySet(),
+    val usedActionButtonIds: Set<String> = emptySet(),
+    val formDraftValues: Map<String, String> = emptyMap(),
+    val isFormSubmitted: Boolean = false,
+    val onFormFieldChanged: (String, String) -> Unit = { _, _ -> },
+    val onFormSubmit: (Map<String, String>) -> Unit = {},
+    val feedbackState: FeedbackResponseState = FeedbackResponseState(),
+    val isFeedbackSubmitted: Boolean = false,
+    val submittedFeedbackRating: Int? = null,
+    val onFeedbackDraft: (FeedbackDraft) -> Unit = {},
+    val onFeedbackSubmit: (FeedbackDraft) -> Unit = {},
+    private val imageRequest: (String, (android.graphics.Bitmap?) -> Unit) -> Unit = { _, done -> done(null) },
+    private val linkRequest: (String) -> Unit = {},
     private val action: (String, String?, Map<String, String>?, String?) -> Unit,
 ) {
     @JvmOverloads
     fun submitAction(id: String, value: String? = null, formData: Map<String, String>? = null, renderId: String? = null) =
         action(id, value, formData, renderId)
+
+    /** Loads a rich-content image through the SDK's bounded image loader and URL validation. */
+    fun loadImage(url: String, onLoaded: (android.graphics.Bitmap?) -> Unit) = imageRequest(url, onLoaded)
+
+    /** Opens a supported link through the SDK's URL validation and navigation handler. */
+    fun openUrl(url: String) = linkRequest(url)
 }
 
 /** Only supported presentation fields, with host fallbacks already applied. No token or permissions. */
@@ -59,16 +81,18 @@ data class ArtemisBranding(
     val logoUrl: String? = null,
     val placeholderText: String? = null,
     val connectingStatusText: String? = null,
+    val welcomeMessage: String? = null,
 )
 
 internal data class ArtemisPresentation(
     val branding: ArtemisBranding,
     val strings: ArtemisStrings,
+    val typography: ArtemisTypographyConfig = ArtemisTypographyConfig(),
     val rendererRevision: Int = 0,
     val logoResolver: ArtemisLogoResolver? = null,
 )
 
-internal fun resolveBranding(host: ArtemisThemeConfig, widget: JsonObject?): ArtemisBranding {
+internal fun resolveBranding(host: ArtemisThemeConfig, widget: JsonObject?, hostWelcomeMessage: String? = null): ArtemisBranding {
     val theme = widget?.get("theme")?.takeIf { it.isJsonObject }?.asJsonObject
     fun string(node: JsonObject?, key: String) = node?.get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
         ?.asString?.trim()?.takeIf(String::isNotBlank)
@@ -94,6 +118,7 @@ internal fun resolveBranding(host: ArtemisThemeConfig, widget: JsonObject?): Art
         logoUrl = string(theme, "logoUrl") ?: host.logoUrl,
         placeholderText = string(widget, "placeholderText") ?: host.placeholderText,
         connectingStatusText = string(widget, "connectingStatusText"),
+        welcomeMessage = string(widget, "welcomeMessage") ?: hostWelcomeMessage,
     )
 }
 

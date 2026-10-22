@@ -8,11 +8,15 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.res.ResourcesCompat
 import com.artemis.uisdk.ArtemisConnectionConfig
+import com.artemis.uisdk.ArtemisFeatureConfig
 import com.artemis.uisdk.ArtemisThemeConfig
 import com.artemis.uisdk.ArtemisUI
 import com.artemis.uisdk.ArtemisUIConfig
+import com.artemis.uisdk.ArtemisTypographyConfig
 import com.artemis.uisdk.ArtemisUiHandle
+import com.artemis.uisdk.ChatOptions
 
 /** Minimal host-app integration sample. Runtime settings come from ignored local properties or environment variables. */
 class MainActivity : AppCompatActivity() {
@@ -78,13 +82,26 @@ class MainActivity : AppCompatActivity() {
                     channelId = channelIdentifier.ifEmpty { null },
                     channelName = if (channelIdentifier.isEmpty()) "Support" else null,
                 ),
-                features = com.artemis.uisdk.ArtemisFeatureConfig(attachments = true, contactCenter = true, advancedFeedback = true, authentication = true),
+                features = ArtemisFeatureConfig(
+                    attachments = true,
+                    contactCenter = true,
+                    advancedFeedback = true,
+                    authentication = true
+                ),
                 theme = ArtemisThemeConfig(primary = "#2563EB", mode = "system"),
+                typography = ArtemisTypographyConfig(
+                    typeface = ResourcesCompat.getFont(applicationContext, R.font.bukra),
+                ),
             )
             val handle = artemisUiHandle ?: ArtemisUI.initialize(applicationContext, artemisUiConfiguration).also {
                 artemisUiHandle = it
+                CustomTemplateInjection.register(it)
             }
-            handle.showChat(this, com.artemis.uisdk.ChatOptions(title = chatTitle.ifBlank { "Chat" }))
+            handle.showChat(this, ChatOptions(
+                title = chatTitle.ifBlank { "Chat" },
+                footerBuilder = CustomChatheaderFooter.footerBuilder,
+            )
+            )
         } catch (error: IllegalArgumentException) {
             Toast.makeText(this, error.message ?: "Check the configuration", Toast.LENGTH_LONG).show()
         } catch (error: IllegalStateException) {

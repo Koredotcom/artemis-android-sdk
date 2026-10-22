@@ -124,6 +124,10 @@ Runtime replay requirement for surveys missed while offline. Publish both module
 
 Step 4 adds branding from existing SDK init/refresh responses, `ArtemisStrings`, runtime theme updates, local logo resolvers, custom template renderers, and native host commands/state. No additional branding API call is introduced. See [customization and host APIs](docs/customization-and-host-apis.md) for supported fields, precedence, examples and validation scope.
 
+Hosts can replace the native header and composer per chat with `ChatOptions.headerBuilder` and `ChatOptions.footerBuilder`. The sample app uses custom views for both. See [customization and host APIs](docs/customization-and-host-apis.md#custom-chat-header-and-footer) for the builder contract.
+
+Android also supports host typography (`ArtemisTypographyConfig`), a per-chat `runtimeUserContext`, and the Runtime `widgetConfig.welcomeMessage` empty-state message. Custom template requests include form draft and submission callbacks plus feedback state and callbacks. See [customization and host APIs](docs/customization-and-host-apis.md) for examples.
+
 ### Advanced feedback and remaining parity
 
 Advanced assistant surveys are opt-in with `features.advancedFeedback = true` (enabled in the sample). See [advanced feedback](docs/advanced-feedback.md) for payloads and host APIs, and the [remaining parity plan](docs/pending-parity-plan.md) for the staged delivery sequence and acceptance criteria.

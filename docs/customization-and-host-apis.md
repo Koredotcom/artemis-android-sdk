@@ -26,12 +26,34 @@ Supported Web SDK fields:
 
 A valid runtime value overrides the host theme. Missing, null, malformed, or unsupported values use the host setting, then native defaults. Runtime config removal clears the previous runtime overlay. Identical refresh branding does not invalidate templates. Launcher styling, CSS fonts/images, density and Web-specific radius presets are not interpreted as Android layout instructions. Light/dark mode remains an initialization setting.
 
+Runtime `widgetConfig.welcomeMessage` is shown in the empty conversation state and takes precedence over the optional host `ArtemisUIConfig.welcomeMessage`. The host value can be supplied in YAML as `chat.welcome_message`.
+
 Host theme updates use the same fields through `ArtemisThemeConfig`:
 
 ```kotlin
 // Run UI commands on the main thread. Runtime branding retains precedence.
 handle.updateTheme(config.theme.copy(primary = "#14532D", assistantName = "Support"))
 ```
+
+Host fonts and text styling are configured separately from colors. Supply a bundled `Typeface` or Android system family, an optional monospace face, a text-size scale, and an optional callback for per-`TextView` styling. The callback runs on the main thread after SDK styling, for SDK and custom-rendered text views.
+
+```kotlin
+val typography = ArtemisTypographyConfig(
+    typeface = androidx.core.content.res.ResourcesCompat.getFont(context, R.font.brand_sans),
+    monospaceTypeface = android.graphics.Typeface.MONOSPACE,
+    textSizeScale = 1.05f,
+    textViewStyler = ArtemisTextViewStyler { textView ->
+        textView.letterSpacing = 0.01f
+    },
+)
+val config = ArtemisUIConfig(connection = connection, typography = typography)
+// An open handle can also apply a new typography configuration at runtime.
+handle.updateTypography(typography)
+```
+
+`theme.font_family` in YAML maps to an Android system family name. Use `ArtemisTypographyConfig` for fonts bundled by the host application.
+
+The app module demonstrates this with the 29LT Bukra regular and bold font files copied from the Flutter example. `MainActivity` loads `R.font.bukra` and registers client renderers for the `carousel`, `list`, and `table` rich-content keys in `CustomTemplateInjection`. Each renderer reads its own `request.payload`; the SDK uses the returned view in place of its built-in template. If a payload does not match the sample renderer's expected structure, it returns null and the SDK falls back to its built-in renderer.
 
 ### Logos without SDK network requests
 
@@ -46,6 +68,34 @@ handle.setLogoResolver { context, logoUrl ->
 ```
 
 A resolver may also be passed to `ArtemisUIConfig(logoResolver = ...)` at initialization.
+
+## Custom chat header and footer
+
+Pass native view builders in `ChatOptions` to replace the SDK header, composer, or both for a chat. Builders return unattached views. The default SDK views remain in use when a builder is omitted.
+
+```kotlin
+handle.showChat(activity, ChatOptions(
+    title = "Support",
+    headerBuilder = ArtemisChatHeaderBuilder { context, header ->
+        android.widget.Button(context).apply {
+            text = header.title
+            setOnClickListener { header.onClose() }
+        }
+    },
+    footerBuilder = ArtemisChatFooterBuilder { context, footer ->
+        android.widget.LinearLayout(context).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            addView(footer.input, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+            addView(android.widget.Button(context).apply {
+                text = "Send"
+                setOnClickListener { footer.onSend() }
+            })
+        }
+    },
+))
+```
+
+The header context provides the current title and minimize/close actions. The footer context provides the SDK-owned `EditText` (preserving draft and input behavior), an enabled `StateFlow<Boolean>`, the attachment preview view, and send/optional attach callbacks. A custom footer can collect `enabled` to update its controls. Add `attachmentPreview` to the returned view if the host wants attachment drafts displayed. `ChatOptions.runtimeUserContext` optionally overrides connection user context for that chat, using the socket schema (`user_id` and `custom_attributes`). The app module demonstrates both replacements in `CustomChatheaderFooter`.
 
 ## Strings and localization
 
@@ -102,7 +152,7 @@ val registration = handle.registerTemplateRenderer("booking_summary") { request 
 registration.close()
 ```
 
-Return an unattached view. Returning null, throwing, or returning an already attached view falls back to built-in rendering, then canonical fallback text. `request.payload` and message JSON are detached copies. Renderers must not send requests while rendering; submit actions from user interaction. Actions go through existing connection validation and action locks. The SDK reuses views during scrolling and normal status/progress updates. Renderer registration and actual presentation changes invalidate affected presentation caches; native form drafts are retained across those changes within a bounded cache. Host renderers own their own view state and media/resource lifecycle and should use attach/detach listeners where needed.
+Return an unattached view. Returning null, throwing, or returning an already attached view falls back to built-in rendering, then canonical fallback text. `request.payload` and message JSON are detached copies. Renderers must not send requests while rendering; submit actions from user interaction. Actions go through existing connection validation and action locks. The request exposes custom form draft values/change/submit callbacks, feedback draft/submission state and callbacks, locked action state, and the active typography config. Custom templates can load images through `request.loadImage(url)`, which uses the SDK's bounded image loader and URL checks, and open links through `request.openUrl(url)`, which uses the SDK navigation policy. Form drafts use the SDK's bounded per-session draft cache. The SDK reuses views during scrolling and normal status/progress updates. Renderer registration and actual presentation changes invalidate affected presentation caches. Host renderers own their own view state and media/resource lifecycle and should use attach/detach listeners where needed.
 
 ## Native host APIs
 

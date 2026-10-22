@@ -84,7 +84,7 @@ class ArtemisChatViewModel internal constructor(
                 .bootstrapToken(connectionConfig.bootstrapToken)
                 .bootstrapTokenProvider(connectionConfig.bootstrapTokenProvider)
                 .deploymentSlug(connectionConfig.deploymentSlug)
-                .userContext(connectionConfig.userContext)
+                .userContext(artemisUiHandle.effectiveUserContext)
                 .sessionMetadata(connectionConfig.sessionMetadata)
                 .clientSessionIdentifier(if (connectionConfig.clientSessionIdentifier) artemisUiHandle.clientSessionIdentifier else null)
                 .newSessionOnConnect(artemisUiHandle.requestsNewSession)
