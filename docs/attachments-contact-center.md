@@ -50,3 +50,31 @@ Received attachment links are resolved through the SDK's authenticated download 
 When `contactCenter` is enabled, Runtime transfer events can show queue and connection status, agent messages and typing, external forms, and post-transfer surveys. Forms open in the device browser; returning to the app leaves the chat session open.
 
 Supported transfer survey ratings include NPS (0–10), CSAT (1–5), and like/dislike (0/1). A matching Runtime acknowledgement updates the submission state. A survey needs to be delivered by Runtime to be displayed. If the device is offline when a survey is created, Runtime must replay its event or provide the definition in history for the SDK to show it after reconnecting.
+
+### Agent media invites
+
+With `contactCenter` enabled, an `agent_transfer_event` containing an `agent:media` WebRTC invite opens a native Accept/Reject dialog in the SDK chat. The decision uses the iOS/Web SDK wire contract:
+
+```json
+{
+  "type": "contact_center.call_response",
+  "sessionId": "…",
+  "callId": "…",
+  "mediaSessionId": "…",
+  "decision": "accepted",
+  "callType": "audio"
+}
+```
+
+Reject uses `"decision":"rejected"` and `"reason":"user_rejected"`; an ended call uses `"decision":"terminated"`. Runtime may return `contact_center.sbc_details_response` when the session starts and releases temporary SIP/WebRTC endpoint credentials in a follow-up `agent:media` event after acceptance. The SDK then opens the AudioCodes WebRTC call surface. The same invite, endpoint, SBC, and termination states are exposed as `ArtemisUiEvent.AgentMediaInvite`, `AgentMediaEndpointReleased`, `AgentMediaSbcDetailsChanged`, and `AgentMediaCallTerminated` to listeners registered with `ArtemisUiHandle.addListener`.
+
+The default AudioCodes bundle is loaded from `<connection.endpoint>/api/sdk/assets/contact-center/ac_webrtc-1.19.0.min.js`. Override it with `contact_center.sip_stack_url` in YAML or `ArtemisContactCenterConfig(sipStackUrl = …)`. The host application must declare microphone permission; video calls also require camera permission. HTTPS is required for Runtime and the media bundle, except loopback HTTP development hosts.
+
+```kotlin
+val listener = ArtemisUiListener { event ->
+    if (event is ArtemisUiEvent.AgentMediaInvite) {
+        // Route the invite to the host app's configured call provider.
+    }
+}
+val registration = uiHandle.addListener(listener)
+```

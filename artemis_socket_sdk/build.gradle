@@ -21,6 +21,10 @@ afterEvaluate {
 android {
     compileSdk 36
 
+    buildFeatures {
+        buildConfig true
+    }
+
     publishing {
         singleVariant('release')
     }
@@ -38,6 +42,11 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        // Lifecycle 2.9's detector is incompatible with AGP 8.7's Kotlin analysis API.
+        disable 'NullSafeMutableLiveData'
     }
 
     dependencies {

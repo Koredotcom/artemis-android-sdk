@@ -8,8 +8,16 @@ import java.util.UUID
 
 /** The sole wire boundary. Malformed/unknown events never mutate a conversation. */
 internal sealed interface ChatFrame {
-    data class Authorization(val event: AuthorizationEvent) : ChatFrame
-    data class Transfer(val sessionId: String, val eventType: String, val messages: List<ChatMessage>, val timestamp: Long = System.currentTimeMillis()) : ChatFrame
+    data class Authorization(val event: AuthorizationEvent, val payload: JsonObject = JsonObject()) : ChatFrame
+    data class Transfer(
+        val sessionId: String,
+        val eventType: String,
+        val messages: List<ChatMessage>,
+        val timestamp: Long = System.currentTimeMillis(),
+        val mediaFrame: ContactCenterMediaFrame? = null,
+        val payload: JsonObject? = null,
+    ) : ChatFrame
+    data class ContactCenterMedia(val event: ContactCenterMediaFrame) : ChatFrame
     data class Session(val payload: JsonObject) : ChatFrame
     data class Start(val id: String) : ChatFrame
     data class Chunk(val id: String, val text: String) : ChatFrame
@@ -19,7 +27,17 @@ internal sealed interface ChatFrame {
     data class Cancel(val id: String?, val requestId: String?, val reason: String) : ChatFrame
     data class Activity(val type: String, val payload: JsonObject) : ChatFrame
     data class Error(val text: String, val code: String? = null) : ChatFrame
-    data class InitialMessage(val pending: Boolean) : ChatFrame
+    data class FeedbackAck(val payload: JsonObject) : ChatFrame
+    data class SurveyAck(val payload: JsonObject) : ChatFrame
+    data class SessionEnd(val payload: JsonObject) : ChatFrame
+    data class InitialMessage(
+        val pending: Boolean,
+        val source: String? = null,
+        val expected: Boolean = pending,
+        val rendered: Boolean = !pending,
+        val failed: Boolean = false,
+        val payload: JsonObject = JsonObject(),
+    ) : ChatFrame
 }
 
 internal fun JsonObject.string(vararg keys: String): String? = keys.firstNotNullOfOrNull { key ->
@@ -37,8 +55,12 @@ internal object ChatFrameParser {
         val p = JsonParser.parseString(raw).takeIf { it.isJsonObject }?.asJsonObject ?: return null
         val id = p.string("messageId")?.takeIf { it.isNotBlank() }
         when (p.string("type")) {
-            in AuthorizationContracts.eventTypes -> AuthorizationContracts.parse(p)?.let(ChatFrame::Authorization)
+            in AuthorizationContracts.eventTypes -> AuthorizationContracts.parse(p)?.let { ChatFrame.Authorization(it, p.deepCopy()) }
             "agent_transfer_event" -> ContactCenterContracts.transfer(p)
+            "agent_media" -> ContactCenterContracts.directMedia(p)
+            "contact_center.call_agent_webrtc", "call_agent_webrtc" -> ContactCenterContracts.directMedia(p)
+            "contact_center.terminate_agent_webrtc", "terminate_agent_webrtc" -> ContactCenterContracts.directMedia(p)
+            "contact_center.sbc_details_response" -> ContactCenterContracts.sbcDetails(p)
             "session_start" -> p.string("sessionId")?.takeIf(String::isNotBlank)?.let { ChatFrame.Session(p) }
             "response_start" -> id?.let { ChatFrame.Start(it) }
             "response_chunk" -> id?.let { ChatFrame.Chunk(it, p.string("chunk", "content", "text") ?: return null) }
@@ -52,7 +74,20 @@ internal object ChatFrameParser {
                 val type = event.string("type") ?: return null
                 ChatFrame.Activity(if (type == "tool_thought") "thought" else type, event.obj("data", "payload") ?: event)
             }
-            "initial_assistant_message_status" -> ChatFrame.InitialMessage(p.flag("pending"))
+            "initial_assistant_message_status" -> {
+                val status = p.string("status")
+                ChatFrame.InitialMessage(
+                    pending = p.flag("pending", status == "pending"),
+                    source = p.string("source"),
+                    expected = p.flag("expected", true),
+                    rendered = p.flag("rendered", status != "failed" && status != "pending"),
+                    failed = p.flag("failed", status == "failed"),
+                    payload = p.deepCopy(),
+                )
+            }
+            "feedback.ack" -> ChatFrame.FeedbackAck(p.deepCopy())
+            "agent_transfer_survey.ack" -> ChatFrame.SurveyAck(p.deepCopy())
+            "session_end", "session_ended" -> ChatFrame.SessionEnd(p.deepCopy())
             "error" -> ChatFrame.Error(p.string("message", "content", "error") ?: "The assistant could not complete the response", p.string("code"))
             else -> null
         }
@@ -177,6 +212,13 @@ internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, 
     private var activeRequest: String? = null
     private val cancelled = linkedSetOf<String>()
     private val parked = linkedMapOf<String, ChatFrame.UserRender>()
+    fun clearMessages() {
+        activeResponse = null
+        activeRequest = null
+        cancelled.clear()
+        parked.clear()
+        state = state.copy(messages = emptyList())
+    }
     fun configureScope(value: JsonObject) { scope = value.deepCopy() }
     fun update(value: ChatUiState) { state = value }
     fun acceptedUser(id: String, text: String, metadata: JsonObject? = null) {
@@ -193,14 +235,28 @@ internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, 
                 val session = frame.payload.string("sessionId")
                 if (state.sessionId != null && state.sessionId != session) {
                     authorization.clear()
-                    state = state.copy(messages = emptyList(), agentTransferStatus = AgentTransferStatus.NONE, agentTransferSessionId = null, pendingAttachment = null, attachmentDrafts = emptyList(), attachmentFilename = null, attachmentUploading = false, attachmentUploadFailed = false, attachmentUploadProgress = null, attachmentsUnavailable = false); lastTransferTransitionAt = 0; transferLiveRevision = 0; cancelled.clear(); parked.clear()
+                    state = state.copy(messages = emptyList(), agentTransferStatus = AgentTransferStatus.NONE, agentTransferSessionId = null,
+                        initialAssistantMessageSource = null, initialAssistantMessageExpected = false,
+                        initialAssistantMessagePending = false, initialAssistantMessageRendered = false,
+                        initialAssistantMessageFailed = false,
+                        pendingAttachment = null, attachmentDrafts = emptyList(), attachmentFilename = null,
+                        attachmentUploading = false, attachmentUploadFailed = false, attachmentUploadProgress = null,
+                        attachmentsUnavailable = false); lastTransferTransitionAt = 0; transferLiveRevision = 0; cancelled.clear(); parked.clear()
                 }
                 redaction = frame.payload.obj("capabilities")?.flag("liveUserInputRedaction") == true
                 val initial = frame.payload.obj("initialAssistantMessage")
-                state = state.copy(sessionId = session, initialAssistantMessagePending = initial?.flag("expected") == true,
+                val initialExpected = initial?.flag("expected") == true
+                val initialSource = initial?.string("source")
+                state = state.copy(sessionId = session,
+                    initialAssistantMessageSource = initialSource,
+                    initialAssistantMessageExpected = initialExpected,
+                    initialAssistantMessagePending = initialExpected,
+                    initialAssistantMessageRendered = false,
+                    initialAssistantMessageFailed = false,
                     isTyping = false, activityText = null)
                 activeResponse = null; activeRequest = null
             }
+            is ChatFrame.ContactCenterMedia -> Unit
             is ChatFrame.Transfer -> {
                 // Runtime routes transfer IDs over the authenticated conversation socket. They are
                 // distinct from session_start's Runtime session ID; socket generations reject stale sockets.
@@ -281,11 +337,22 @@ internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, 
             }
             is ChatFrame.Activity -> activity(frame)
             is ChatFrame.Error -> { activeResponse = null; activeRequest = null; state = state.copy(isTyping = false, activityText = null, errorMessage = frame.text) }
-            is ChatFrame.InitialMessage -> state = state.copy(initialAssistantMessagePending = frame.pending)
+            is ChatFrame.FeedbackAck, is ChatFrame.SurveyAck -> Unit
+            is ChatFrame.SessionEnd -> {
+                activeResponse = null; activeRequest = null
+                state = state.copy(isTyping = false, activityText = null)
+            }
+            is ChatFrame.InitialMessage -> state = state.copy(
+                initialAssistantMessageSource = frame.source ?: state.initialAssistantMessageSource,
+                initialAssistantMessageExpected = frame.expected || state.initialAssistantMessageExpected,
+                initialAssistantMessagePending = frame.pending,
+                initialAssistantMessageRendered = state.initialAssistantMessageRendered || frame.rendered,
+                initialAssistantMessageFailed = state.initialAssistantMessageFailed || frame.failed,
+            )
         }
     }
     private fun activity(frame: ChatFrame.Activity) {
-        if (frame.type == "status_clear") { state = state.copy(activityText = null); return }
+        if (frame.type == "status_clear") { state = state.copy(activityText = null, isTyping = false); return }
         val policy = scope.obj("activityVisibilityPolicy") ?: JsonObject()
         if (!scope.flag("showActivityUpdates") || !policy.flag("enabled", true)) return
         val category = when (frame.type) { "thought" -> "thoughtSummaries"; "status_update" -> "fillers"; "handoff", "tool_warnings", "session_health" -> "systemNotices"; else -> return }

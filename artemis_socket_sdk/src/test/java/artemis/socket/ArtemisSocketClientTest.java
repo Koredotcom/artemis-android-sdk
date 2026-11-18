@@ -24,7 +24,9 @@ public class ArtemisSocketClientTest {
         assertFalse(h.client.isConnected());
         assertEquals("/api/v1/sdk/init", h.requests.get(0).url().encodedPath());
         assertEquals("pk", h.requests.get(0).header("X-Public-Key"));
-        assertEquals("{\"channelName\":\"mobile\"}", h.bodies.get(0));
+        JsonObject initBody = JsonParser.parseString(h.bodies.get(0)).getAsJsonObject();
+        assertEquals("mobile", initBody.get("channelName").getAsString());
+        assertEquals("android", initBody.get("platform").getAsString());
         assertEquals("/api/v1/sdk/ws-ticket", h.requests.get(1).url().encodedPath());
         assertEquals("token", h.requests.get(1).header("X-SDK-Token"));
         assertEquals("/ws/sdk", h.sockets.get(0).request.url().encodedPath());
@@ -80,7 +82,9 @@ public class ArtemisSocketClientTest {
     @Test public void hostedBootstrapNeverUsesPublicKeyOrUrlCredentials() throws Exception {
         start(ArtemisSocketConfiguration.builder().endpoint("https://runtime.example.com").projectId("project").bootstrapTokenProvider(() -> "hosted"));
         assertNull(h.requests.get(0).header("X-Public-Key"));
-        assertEquals("hosted", JsonParser.parseString(h.bodies.get(0)).getAsJsonObject().get("bootstrapToken").getAsString());
+        JsonObject initBody = JsonParser.parseString(h.bodies.get(0)).getAsJsonObject();
+        assertEquals("hosted", initBody.get("bootstrapToken").getAsString());
+        assertEquals("android", initBody.get("platform").getAsString());
         assertNull(h.sockets.get(0).request.url().query());
     }
     @Test public void lateOldSocketCallbacksCannotDisconnectReplacement() throws Exception {
@@ -122,6 +126,34 @@ public class ArtemisSocketClientTest {
         assertEquals("/api/projects/project/sessions/session/messages", request.url().encodedPath());
         assertEquals("token", request.header("X-SDK-Token")); assertEquals("asc", request.url().queryParameter("direction"));
     }
+    @Test public void configurableHistoryBoundsPageSizeAndPageCount() throws Exception {
+        start(config().historyPagination(7, 1)); h.ready(); h.client.loadHistory();
+        assertTrue(h.historyReady.await(2, TimeUnit.SECONDS));
+        assertEquals(1, JsonParser.parseString(h.history).getAsJsonArray().size());
+        Request request = h.requests.stream().filter(r -> r.url().encodedPath().endsWith("/messages")).findFirst().get();
+        assertEquals("7", request.url().queryParameter("limit"));
+        assertEquals(1, h.count("/api/projects/project/sessions/session/messages"));
+        try { config().historyPagination(0, 1).build(); fail("Expected invalid page size"); } catch (IllegalArgumentException expected) { }
+    }
+    @Test public void clearingHistoryInvalidatesDeferredHistoryCallbacks() throws Exception {
+        h = new Harness(config().build(), true); h.client.connect(); h.awaitSockets(1); h.ready(); h.flushCallbacks();
+        h.client.loadHistory(); h.awaitRequests(4); h.await(() -> !h.callbacks.isEmpty());
+        h.client.invalidateHistoryLoads(); h.flushCallbacks();
+        assertNull(h.history);
+    }
+    @Test public void sessionCustomDataIsCopiedMergedSentAndClearedOnEnd() throws Exception {
+        start(config()); h.ready();
+        JsonObject nested = new JsonObject(); nested.addProperty("value", "before");
+        JsonObject initial = new JsonObject(); initial.add("details", nested); initial.addProperty("stage", "first");
+        h.client.updateCustomData(initial); nested.addProperty("value", "after");
+        JsonObject update = new JsonObject(); update.addProperty("stage", "second"); h.client.updateCustomData(update);
+        JsonObject snapshot = h.client.getCustomData(); snapshot.addProperty("stage", "changed");
+        h.client.sendMessage("hello");
+        JsonObject sent = h.lastFrame().getAsJsonObject("customData");
+        assertEquals("before", sent.getAsJsonObject("details").get("value").getAsString());
+        assertEquals("second", sent.get("stage").getAsString());
+        h.client.endSession(); assertEquals(0, h.client.getCustomData().size());
+    }
     @Test public void unsupportedHistoryDoesNotBreakConnection() throws Exception {
         start(config()); h.ready(); h.httpStatus = 404; h.client.loadHistory(); h.awaitRequests(3);
         assertTrue(h.client.isConnected()); h.client.sendMessage("still works");
@@ -143,6 +175,12 @@ public class ArtemisSocketClientTest {
     @Test public void optionalIdleDisconnectCanResumeWithSameToken() throws Exception {
         start(config().idleDisconnect(30, false)); h.ready(); h.await(() -> !h.client.isConnected());
         h.client.connect(); h.awaitSockets(2); h.ready(); assertEquals(1, h.count("/api/v1/sdk/init"));
+    }
+    @Test public void idleTimeoutIsReportedBeforeConfiguredDisconnect() throws Exception {
+        start(config().idleDisconnect(30, false)); h.ready(); h.await(() -> h.idleTimeoutCallbacks.get() == 1);
+        assertEquals(1, h.idleTimeoutCallbacks.get());
+        assertEquals(30L, h.idleTimeoutMs);
+        assertEquals("disconnect", h.idleTimeoutBehavior);
     }
     @Test public void refreshScopeChangeIsRejected() throws Exception {
         h = new Harness(config().reconnection(false, 5, 1, 2).build()); h.expirySeconds = 1; h.changeScopeOnRefresh = true;
@@ -424,7 +462,8 @@ public class ArtemisSocketClientTest {
         volatile boolean changeScopeOnRefresh, blockInit;
         final CountDownLatch initEntered = new CountDownLatch(1), releaseInit = new CountDownLatch(1);
         final List<Runnable> callbacks = new CopyOnWriteArrayList<>();
-        final AtomicInteger connectedCallbacks = new AtomicInteger(), disconnectedCallbacks = new AtomicInteger();
+        final AtomicInteger connectedCallbacks = new AtomicInteger(), disconnectedCallbacks = new AtomicInteger(), idleTimeoutCallbacks = new AtomicInteger();
+        volatile long idleTimeoutMs; volatile String idleTimeoutBehavior;
         volatile int deliveryStatus = 404;
         volatile String deliveryResponse = "{\"data\":{\"download\":{\"available\":true,\"url\":\"https://files.example.com/scoped-delivery\"}}}";
         volatile int attachmentStatus = 200;
@@ -476,6 +515,7 @@ public class ArtemisSocketClientTest {
         JsonObject lastFrame() { List<String> frames = sockets.get(sockets.size()-1).frames; return JsonParser.parseString(frames.get(frames.size()-1)).getAsJsonObject(); }
         public void onLog(String message) { } public void onConnecting() { } public void onConnected(String id) { connectedCallbacks.incrementAndGet(); }
         public void onDisconnected(String reason) { disconnectedCallbacks.incrementAndGet(); } public void onMessage(String payload) { } public void onError(Throwable error) { }
+        public void onIdleTimeout(long timeoutMs, String behavior) { idleTimeoutMs = timeoutMs; idleTimeoutBehavior = behavior; idleTimeoutCallbacks.incrementAndGet(); }
         public void onHistory(String id, String payload) { history = payload; historyReady.countDown(); }
     }
     private static class FakeSocket implements WebSocket {

@@ -14,6 +14,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
 import com.artemis.uisdk.chat.ArtemisChatViewModel
+import com.artemis.uisdk.chat.AgentMediaCallTerminated as AgentMediaCallTerminatedData
+import com.artemis.uisdk.chat.AgentMediaEndpoint
+import com.artemis.uisdk.chat.AgentMediaSbcDetails
 import com.google.gson.JsonObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -161,6 +164,12 @@ class ArtemisUiHandle internal constructor(
         checkMainThread(); return chatViewModel?.sendText(text, metadata?.deepCopy()) ?: false
     }
     @MainThread fun sendComposedMessage(text: String): Boolean { checkMainThread(); return chatViewModel?.sendComposedMessage(text) ?: false }
+    /** Session-scoped custom values attached to future user messages. */
+    @MainThread fun updateCustomData(data: JsonObject) { checkMainThread(); chatViewModel?.updateCustomData(data.deepCopy()) }
+    @MainThread fun getCustomData(): JsonObject { checkMainThread(); return chatViewModel?.getCustomData() ?: JsonObject() }
+    @MainThread fun clearCustomData() { checkMainThread(); chatViewModel?.clearCustomData() }
+    /** Clear messages from the local transcript without deleting server history. */
+    @MainThread fun clearHistory() { checkMainThread(); chatViewModel?.clearHistory() }
     @MainThread fun uploadAttachments(uris: List<Uri>) { checkMainThread(); chatViewModel?.uploadAttachments(uris.toList()) }
     @MainThread fun retryAttachment(localId: String) { checkMainThread(); chatViewModel?.retryAttachment(localId) }
     @MainThread fun cancelAttachmentUpload(localId: String) { checkMainThread(); chatViewModel?.cancelAttachmentUpload(localId) }
@@ -322,10 +331,99 @@ fun interface ArtemisUiListener { fun onEvent(event: ArtemisUiEvent) }
 sealed interface ArtemisUiEvent {
     data class ConnectionChanged(val status: String, val detail: String? = null) : ArtemisUiEvent
     data class MessageChanged(val messageId: String, val role: String) : ArtemisUiEvent
+    /** Web SDK `message`: a message was accepted into the local transcript. */
+    data class Message(val message: com.artemis.uisdk.chat.ChatMessage) : ArtemisUiEvent
+    /** Web SDK `messageChunk`: an incremental assistant response chunk arrived. */
+    data class MessageChunk(val messageId: String, val chunk: String) : ArtemisUiEvent
+    /** Web SDK `messagesReplaced`: the authoritative transcript snapshot changed. */
+    data class MessagesReplaced(val messages: List<com.artemis.uisdk.chat.ChatMessage>) : ArtemisUiEvent
+    /** Web SDK `messageSent`: the outbound message was accepted by the transport. */
+    data class MessageSent(val messageId: String) : ArtemisUiEvent
+    data class AttachmentError(val filename: String, val error: String) : ArtemisUiEvent
+    data class Typing(val isTyping: Boolean) : ArtemisUiEvent
+    data class StatusUpdate(
+        val text: String,
+        val operation: String = "",
+        val fillerId: String? = null,
+        val turnId: String? = null,
+    ) : ArtemisUiEvent
+    object StatusClear : ArtemisUiEvent
     data class Error(val code: String, val message: String, val recoverable: Boolean) : ArtemisUiEvent
     data class SessionStarted(val sessionId: String, val scope: JsonObject) : ArtemisUiEvent
+    data class SessionEnded(val reason: String? = null) : ArtemisUiEvent
+    data class IdleTimeout(val timeoutMs: Long, val behavior: String) : ArtemisUiEvent
+    data class InitialAssistantMessageStatus(
+        val source: String?,
+        val expected: Boolean,
+        val pending: Boolean,
+        val rendered: Boolean,
+        val failed: Boolean,
+    ) : ArtemisUiEvent
     data class AttachmentUploaded(val attachmentId: String, val filename: String) : ArtemisUiEvent
+    data class AuthRequired(
+        val sessionId: String,
+        val pending: List<JsonObject>,
+        val satisfied: List<JsonObject>,
+        val payload: JsonObject? = null,
+    ) : ArtemisUiEvent
+    data class AuthChallenge(val payload: JsonObject) : ArtemisUiEvent
+    data class MessageQueued(val sessionId: String?, val reason: String, val payload: JsonObject? = null) : ArtemisUiEvent
+    data class AuthGateSatisfied(val sessionId: String, val payload: JsonObject? = null) : ArtemisUiEvent
+    data class AuthChallengeResolved(
+        val sessionId: String,
+        val toolCallId: String,
+        val outcome: String?,
+        val payload: JsonObject? = null,
+    ) : ArtemisUiEvent
+    data class FeedbackAck(
+        val messageId: String,
+        val success: Boolean,
+        val feedbackId: String? = null,
+        val actionRenderId: String? = null,
+        val errorCode: String? = null,
+        val errorMessage: String? = null,
+        val payload: JsonObject? = null,
+    ) : ArtemisUiEvent
+    data class AgentTransferSurveyAck(
+        val artemisSessionId: String,
+        val success: Boolean,
+        val feedbackId: String? = null,
+        val errorCode: String? = null,
+        val errorMessage: String? = null,
+        val payload: JsonObject? = null,
+    ) : ArtemisUiEvent
     data class AgentTransferChanged(val status: String) : ArtemisUiEvent
+    data class AgentJoined(val sessionId: String, val payload: JsonObject? = null, val timestamp: Long? = null) : ArtemisUiEvent
+    data class AgentExited(val sessionId: String, val payload: JsonObject? = null, val timestamp: Long? = null) : ArtemisUiEvent
+    data class AgentNotice(val sessionId: String, val payload: JsonObject? = null, val timestamp: Long? = null) : ArtemisUiEvent
+    data class AgentMediaInvite(
+        val callType: String,
+        val conversationId: String?,
+        val providerConversationId: String?,
+        val providerAccountId: String?,
+        val mediaSessionId: String?,
+        val idempotencyKey: String?,
+        val callId: String? = null,
+        val displayName: String? = null,
+    ) : ArtemisUiEvent
+    data class AgentMediaEndpointReleased(val endpoint: AgentMediaEndpoint) : ArtemisUiEvent
+    data class AgentMediaSbcDetailsChanged(val details: AgentMediaSbcDetails) : ArtemisUiEvent
+    data class AgentMediaCallTerminated(val call: AgentMediaCallTerminatedData) : ArtemisUiEvent
+    data class ContactCenterStateChanged(
+        val state: String,
+        val reason: String? = null,
+        val callId: String? = null,
+    ) : ArtemisUiEvent
+    data class ContactCenterReady(val details: AgentMediaSbcDetails) : ArtemisUiEvent
+    data class ContactCenterUnsupported(val reason: String, val capabilities: JsonObject? = null) : ArtemisUiEvent
+    data class ContactCenterIncomingCall(val call: com.artemis.uisdk.chat.AgentMediaInvite) : ArtemisUiEvent
+    data class ContactCenterCallAccepted(val call: AgentMediaEndpoint) : ArtemisUiEvent
+    data class ContactCenterCallRejected(val callId: String, val reason: String? = null) : ArtemisUiEvent
+    data class ContactCenterCallEnded(val callId: String? = null, val reason: String? = null) : ArtemisUiEvent
+    /** A WebView media surface is ready; a browser MediaStream cannot cross the Android bridge. */
+    data class ContactCenterLocalStream(val callId: String? = null, val callType: String? = null) : ArtemisUiEvent
+    data class ContactCenterRemoteStream(val callId: String? = null, val callType: String? = null) : ArtemisUiEvent
+    data class ContactCenterError(val message: String, val recoverable: Boolean = true) : ArtemisUiEvent
     data class ResponseCancelled(val messageId: String?, val reason: String) : ArtemisUiEvent
     object Minimized : ArtemisUiEvent
     data class Closed(val reason: String) : ArtemisUiEvent

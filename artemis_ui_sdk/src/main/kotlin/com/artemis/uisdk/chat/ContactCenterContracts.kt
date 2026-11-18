@@ -1,10 +1,58 @@
 package com.artemis.uisdk.chat
 
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import java.net.URI
 import java.security.MessageDigest
 
 enum class AgentTransferStatus { NONE, QUEUED, CONNECTED, DISCONNECTED }
+data class AgentMediaInvite(
+    val callType: String,
+    val conversationId: String?,
+    val providerConversationId: String?,
+    val providerAccountId: String?,
+    val mediaSessionId: String?,
+    val idempotencyKey: String?,
+    val callId: String? = null,
+    val displayName: String? = null,
+)
+data class AgentMediaIceServer(
+    val urls: List<String>,
+    val username: String? = null,
+    val credential: String? = null,
+)
+data class AgentMediaEndpoint(
+    val callId: String,
+    val mediaSessionId: String,
+    val callType: String,
+    val conversationId: String?,
+    val providerConversationId: String?,
+    val sipUri: String?,
+    val sipUser: String?,
+    val sipPassword: String?,
+    val addresses: List<String>,
+    val domain: String?,
+    val iceServers: List<AgentMediaIceServer>,
+    val customerUserId: String?,
+    val customerSipUser: String?,
+    val customerSipPassword: String?,
+    val customerSipAuthUser: String?,
+    val customerDisplayName: String?,
+)
+data class AgentMediaCallTerminated(val callId: String?, val reason: String?)
+data class AgentMediaSbcDetails(
+    val requestId: String?,
+    val ready: Boolean,
+    val addresses: List<String>,
+    val domain: String?,
+    val iceServers: List<AgentMediaIceServer>,
+)
+internal sealed interface ContactCenterMediaFrame {
+    data class Incoming(val call: AgentMediaInvite) : ContactCenterMediaFrame
+    data class EndpointReleased(val endpoint: AgentMediaEndpoint) : ContactCenterMediaFrame
+    data class Terminated(val call: AgentMediaCallTerminated) : ContactCenterMediaFrame
+    data class SbcDetails(val details: AgentMediaSbcDetails) : ContactCenterMediaFrame
+}
 enum class SurveySubmissionStatus { READY, PENDING, SUBMITTED, FAILED }
 data class AttachmentRef(
     val id: String,
@@ -248,10 +296,16 @@ internal object ContactCenterContracts {
                 "agent:waiting_message",
                 "agent:connected",
                 "agent:disconnected",
+                "agent:joined",
+                "agent:exited",
+                "agent:notice",
                 "agent:typing",
-                "agent:typing_stop"
+                "agent:typing_stop",
+                "agent:media"
             )
         ) return null
+        val mediaFrame = if (type == "agent:media") mediaFrame(data) else null
+        if (type == "agent:media" && mediaFrame == null) return null
         val metadata = JsonObject().apply {
             add("custom", JsonObject().apply {
                 addProperty("source", "agent-transfer"); addProperty(
@@ -368,6 +422,10 @@ internal object ContactCenterContracts {
             )
 
             "agent:connected" -> listOf(content("Connected to a human agent.", MessageRole.SYSTEM))
+            "agent:joined", "agent:exited", "agent:notice" -> {
+                val notice = text("noticeText", "message", "text", "body")
+                if (notice.isBlank()) emptyList() else listOf(content(notice, MessageRole.SYSTEM))
+            }
             "agent:disconnected" -> buildList {
                 text("closeMessage", "message", "text", "body").takeIf(String::isNotBlank)
                     ?.let { add(content(it, suffix = ":close")) }
@@ -391,6 +449,202 @@ internal object ContactCenterContracts {
 
             else -> emptyList()
         }
-        return ChatFrame.Transfer(session, type, messages, timestamp)
+        return ChatFrame.Transfer(session, type, messages, timestamp, mediaFrame, data.deepCopy())
     }
+
+    fun directMedia(p: JsonObject): ChatFrame.ContactCenterMedia? {
+        val type = p.string("type")
+        val frame = when (type) {
+            "agent_media" -> p.obj("event")?.let { event -> mediaFrame(event.obj("data") ?: event) }
+            "contact_center.terminate_agent_webrtc", "terminate_agent_webrtc" ->
+                ContactCenterMediaFrame.Terminated(
+                    AgentMediaCallTerminated(callId(p), p.string("reason") ?: "terminated")
+                )
+            "contact_center.call_agent_webrtc", "call_agent_webrtc" -> {
+                val source = p.obj("call") ?: p
+                val call = call(source) ?: return null
+                ContactCenterMediaFrame.Incoming(
+                    AgentMediaInvite(
+                        callType = call.callType,
+                        conversationId = call.conversationId,
+                        providerConversationId = call.providerConversationId,
+                        providerAccountId = source.string("providerAccountId"),
+                        mediaSessionId = call.mediaSessionId,
+                        idempotencyKey = source.string("idempotencyKey"),
+                        callId = call.callId,
+                        displayName = source.string("displayName", "agentName", "agentDisplayName")
+                            ?: source.obj("agent")?.string("firstName"),
+                    )
+                )
+            }
+            else -> null
+        } ?: return null
+        return ChatFrame.ContactCenterMedia(frame)
+    }
+
+    fun sbcDetails(p: JsonObject): ChatFrame.ContactCenterMedia? {
+        val response = p.obj("responseData")
+        val addresses = strings(response?.array("addresses"))
+        val domain = response?.string("domain")
+        // Match the Web normalizer: a ready response is usable only when the
+        // response contains the SBC address and domain needed to establish a
+        // media session. Malformed/partial responses remain unsupported.
+        val details = AgentMediaSbcDetails(
+            requestId = p.string("requestId"),
+            ready = p.flag("ready") && addresses.isNotEmpty() && !domain.isNullOrBlank(),
+            addresses = addresses,
+            domain = domain,
+            iceServers = iceServers(response?.array("iceServers")),
+        )
+        return ChatFrame.ContactCenterMedia(ContactCenterMediaFrame.SbcDetails(details))
+    }
+
+    private fun mediaFrame(data: JsonObject): ContactCenterMediaFrame? {
+        val providerType = data.string("providerEventType")
+        val action = data.string("action")
+        val mediaKind = data.string("mediaKind")
+        if (mediaKind in setOf("screen_share", "cobrowse") ||
+            providerType?.startsWith("webrtc_screenshare") == true ||
+            providerType?.contains("cobrowse") == true) return null
+
+        if (providerType == "call_agent_webrtc" && action == "invite") {
+            val call = call(data) ?: return null
+            return ContactCenterMediaFrame.Incoming(
+                AgentMediaInvite(
+                    callType = call.callType,
+                    conversationId = call.conversationId,
+                    providerConversationId = call.providerConversationId,
+                    providerAccountId = data.string("providerAccountId"),
+                    mediaSessionId = call.mediaSessionId,
+                    idempotencyKey = data.string("idempotencyKey"),
+                    callId = call.callId,
+                    displayName = data.string("displayName", "agentName", "agentDisplayName")
+                        ?: data.obj("agent")?.string("firstName"),
+                )
+            )
+        }
+        if (providerType == "call_agent_webrtc_accepted" || action == "accepted") {
+            val call = call(data) ?: return null
+            val endpoint = endpoint(data.obj("endpoint")) ?: return null
+            val customer = customer(data.obj("customer")) ?: return null
+            return ContactCenterMediaFrame.EndpointReleased(
+                AgentMediaEndpoint(
+                    callId = call.callId ?: return null,
+                    mediaSessionId = call.mediaSessionId ?: return null,
+                    callType = call.callType,
+                    conversationId = call.conversationId,
+                    providerConversationId = call.providerConversationId,
+                    sipUri = endpoint.sipUri,
+                    sipUser = endpoint.sipUser,
+                    sipPassword = endpoint.sipPassword,
+                    addresses = endpoint.addresses,
+                    domain = endpoint.domain,
+                    iceServers = endpoint.iceServers,
+                    customerUserId = customer.userId,
+                    customerSipUser = customer.sipUser,
+                    customerSipPassword = customer.sipPassword,
+                    customerSipAuthUser = customer.sipAuthUser,
+                    customerDisplayName = customer.displayName,
+                )
+            )
+        }
+        if (providerType in setOf(
+                "call_agent_webrtc_terminated",
+                "call_agent_webrtc_rejected",
+                "call_agent_webrtc_failed"
+            ) || action in setOf("terminated", "cancelled", "failed")) {
+            return ContactCenterMediaFrame.Terminated(
+                AgentMediaCallTerminated(callId(data), data.string("reason") ?: action ?: providerType)
+            )
+        }
+        return null
+    }
+
+    private data class ParsedMediaCall(
+        val callId: String?,
+        val mediaSessionId: String?,
+        val callType: String,
+        val conversationId: String?,
+        val providerConversationId: String?,
+    )
+
+    private data class ParsedMediaEndpoint(
+        val sipUri: String?,
+        val sipUser: String?,
+        val sipPassword: String?,
+        val addresses: List<String>,
+        val domain: String?,
+        val iceServers: List<AgentMediaIceServer>,
+    )
+
+    private data class ParsedMediaCustomer(
+        val userId: String?,
+        val sipUser: String?,
+        val sipPassword: String?,
+        val sipAuthUser: String?,
+        val displayName: String?,
+    )
+
+    private fun call(source: JsonObject): ParsedMediaCall? {
+        val callId = callId(source)
+        val mediaSessionId = source.string("mediaSessionId") ?: callId
+        if (callId.isNullOrBlank() && mediaSessionId.isNullOrBlank()) return null
+        val callType = source.string("callType")?.lowercase()?.takeIf { it in setOf("audio", "video") }
+            ?: if (source.flag("videoCall")) "video" else "audio"
+        return ParsedMediaCall(
+            callId = callId ?: mediaSessionId,
+            mediaSessionId = mediaSessionId ?: callId,
+            callType = callType,
+            conversationId = source.string("conversationId"),
+            providerConversationId = source.string("providerConversationId"),
+        )
+    }
+
+    private fun callId(source: JsonObject): String? = source.string(
+        "callId", "mediaSessionId", "callSid", "conversationId"
+    )
+
+    private fun endpoint(source: JsonObject?): ParsedMediaEndpoint? {
+        source ?: return null
+        val result = ParsedMediaEndpoint(
+            sipUri = source.string("sipURI", "sipUri"),
+            sipUser = source.string("sipUser"),
+            sipPassword = source.string("sipPassword"),
+            addresses = strings(source.array("addresses")),
+            domain = source.string("domain"),
+            iceServers = iceServers(source.array("iceServers")),
+        )
+        return result.takeIf {
+            !it.sipUri.isNullOrBlank() || !it.sipUser.isNullOrBlank() ||
+                !it.sipPassword.isNullOrBlank() || it.addresses.isNotEmpty() || !it.domain.isNullOrBlank()
+        }
+    }
+
+    private fun customer(source: JsonObject?): ParsedMediaCustomer? {
+        source ?: return null
+        val result = ParsedMediaCustomer(
+            userId = source.string("userId"),
+            sipUser = source.string("sipUser"),
+            sipPassword = source.string("sipPassword"),
+            sipAuthUser = source.string("sipAuthUser"),
+            displayName = source.string("displayName"),
+        )
+        return result.takeIf { !it.userId.isNullOrBlank() || !it.sipUser.isNullOrBlank() || !it.sipPassword.isNullOrBlank() }
+    }
+
+    private fun strings(values: JsonArray?): List<String> = values?.mapNotNull {
+        it.takeIf { value -> value.isJsonPrimitive && value.asJsonPrimitive.isString }
+            ?.asString?.trim()?.takeIf(String::isNotBlank)
+    }.orEmpty()
+
+    private fun iceServers(values: JsonArray?): List<AgentMediaIceServer> = values?.mapNotNull { value ->
+        val item = value.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+        val urls = when {
+            item.string("urls", "url") != null -> listOf(item.string("urls", "url")!!)
+            else -> strings(item.array("urls"))
+        }
+        urls.takeIf { it.isNotEmpty() }?.let {
+            AgentMediaIceServer(it, item.string("username"), item.string("credential"))
+        }
+    }.orEmpty()
 }

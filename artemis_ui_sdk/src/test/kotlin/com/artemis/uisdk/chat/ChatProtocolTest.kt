@@ -5,6 +5,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ChatProtocolTest {
+    @Test fun deepLinkTemplateKeepsIndependentValidatedActions() {
+        val payload = com.google.gson.JsonParser.parseString("""{"text":"Choose an action","lang":"en","elements":[{"title":"Funds Transfer","url":"https://app.example.com/transfers","navigation_type":"internal"},{"title":"Contact Support","url":"https://support.example.com","navigation_type":"external"},{"title":"Bad","url":"javascript:alert(1)","navigation_type":"external"},{"title":"Missing URL","navigation_type":"internal"}]}""").asJsonObject
+        val template = TemplateContracts.deepLink(payload)
+        assertEquals("Choose an action", template.text)
+        assertEquals("en", template.lang)
+        assertEquals(2, template.elements.size)
+        assertEquals(TemplateContracts.DeepLinkNavigation.INTERNAL, template.elements[0].navigation)
+        assertEquals(TemplateContracts.DeepLinkNavigation.EXTERNAL, template.elements[1].navigation)
+    }
+
     private fun frame(raw: String) = ChatFrameParser.parse(raw)!!
     private fun transcript(redacted: Boolean = false) = ChatTranscript().apply {
         apply(frame("""{"type":"session_start","sessionId":"s","capabilities":{"liveUserInputRedaction":$redacted}}"""))
@@ -64,6 +74,13 @@ class ChatProtocolTest {
         assertEquals(listOf("a","b"),t.state.messages.map{it.messageId})
         t.mergeHistory(t.state.messages); assertEquals(2,t.state.messages.size)
     }
+    @Test fun clearLocalHistoryResetsMessagesButKeepsSession() {
+        val t = transcript(); t.acceptedUser("u", "hello"); t.apply(ChatFrame.Start("stream"))
+        val session = t.state.sessionId
+        t.clearMessages()
+        assertTrue(t.state.messages.isEmpty()); assertEquals(session, t.state.sessionId)
+        t.acceptedUser("next", "new message"); assertEquals(listOf("next"), t.state.messages.map { it.messageId })
+    }
     @Test fun historyMergesUnmatchedLocalEchoOnceAndKeepsActiveStream() {
         val t = transcript(); t.acceptedUser("local","hello"); t.apply(ChatFrame.Start("stream"))
         t.mergeHistory(listOf(ChatMessage("server",role=MessageRole.USER,text="hello",timestamp=1)))
@@ -116,5 +133,45 @@ class ChatProtocolTest {
     @Test fun pieChartPartitionsCircleAndIgnoresInvalidValues() {
         assertEquals(listOf(90f,270f),TemplateContracts.pieSweeps(listOf(1.0,3.0)))
         assertEquals(listOf(0f,0f,360f),TemplateContracts.pieSweeps(listOf(Double.NaN,-1.0,2.0)))
+    }
+
+    @Test fun phaseOneLifecycleAndAcknowledgementFramesPreserveWirePayloads() {
+        val auth = frame("""{"type":"auth_challenge","sessionId":"s","toolCallId":"tool","authType":"oauth","profileId":"p","profileName":"Profile","prompt":"Authorize","timeoutMs":1000}""") as ChatFrame.Authorization
+        assertEquals("auth_challenge", auth.payload.string("type"))
+        assertEquals("tool", (auth.event as AuthorizationEvent.Challenge).row.id)
+        assertTrue(frame("""{"type":"feedback.ack","messageId":"m","success":true,"feedbackId":"f"}""") is ChatFrame.FeedbackAck)
+        assertTrue(frame("""{"type":"agent_transfer_survey.ack","artemisSessionId":"t","success":false}""") is ChatFrame.SurveyAck)
+        assertTrue(frame("""{"type":"session_ended","reason":"server"}""") is ChatFrame.SessionEnd)
+    }
+
+    @Test fun initialAssistantStatusTracksAllWebStateFields() {
+        val t = transcript()
+        t.apply(frame("""{"type":"session_start","sessionId":"new","initialAssistantMessage":{"source":"dsl_on_start","expected":true}}"""))
+        assertEquals("dsl_on_start", t.state.initialAssistantMessageSource)
+        assertTrue(t.state.initialAssistantMessageExpected)
+        assertTrue(t.state.initialAssistantMessagePending)
+        t.apply(frame("""{"type":"initial_assistant_message_status","source":"dsl_on_start","status":"completed","rendered":true}"""))
+        assertFalse(t.state.initialAssistantMessagePending)
+        assertTrue(t.state.initialAssistantMessageRendered)
+        assertFalse(t.state.initialAssistantMessageFailed)
+    }
+
+    @Test fun agentNoticesAreAcceptedAndRenderedAsSystemMessages() {
+        val t = transcript()
+        t.apply(frame("""{"type":"agent_transfer_event","sessionId":"transfer","event":{"type":"agent:joined","timestamp":"2026-10-15T10:00:00Z","data":{"noticeText":"Agent joined"}}}"""))
+        t.apply(frame("""{"type":"agent_transfer_event","sessionId":"transfer","event":{"type":"agent:notice","timestamp":"2026-10-15T10:00:01Z","data":{"noticeText":"Please hold"}}}"""))
+        assertEquals(listOf("Agent joined", "Please hold"), t.state.messages.map { it.text })
+        assertTrue(t.state.messages.all { it.role == MessageRole.SYSTEM })
+    }
+
+    @Test fun statusClearEndsTheVisibleActivityWithoutCreatingATypingRow() {
+        val t = transcript()
+        t.configureScope(JsonParser.parseString("""{"showActivityUpdates":true,"activityVisibilityPolicy":{"enabled":true,"fillers":true}}""").asJsonObject)
+        t.apply(frame("""{"type":"status_update","text":"Working"}"""))
+        assertTrue(t.state.isTyping)
+        t.apply(frame("""{"type":"status_clear"}"""))
+        assertFalse(t.state.isTyping)
+        assertNull(t.state.activityText)
+        assertTrue(t.state.messages.isEmpty())
     }
 }

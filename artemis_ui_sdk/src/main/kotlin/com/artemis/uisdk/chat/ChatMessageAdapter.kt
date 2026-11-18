@@ -366,12 +366,8 @@ internal class ChatMessageAdapter(
         }
         val views = (0 until container.childCount).map(container::getChildAt)
         container.removeAllViews()
-        if (recyclerView != null && holder.boundPresentation == presentationRevision) holder.boundMessage?.let {
-            templateCache.retain(
-                it,
-                views
-            )
-        }
+        val cached = recyclerView != null && holder.boundPresentation == presentationRevision && holder.boundMessage != null
+        if (cached) templateCache.retain(holder.boundMessage!!, views) else views.forEach(::releaseAdaptiveViews)
     }
 
     override fun onViewRecycled(holder: ChatMessageViewHolder) {

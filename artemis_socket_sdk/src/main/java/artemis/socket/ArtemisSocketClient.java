@@ -30,6 +30,7 @@ public final class ArtemisSocketClient {
     private final Dispatch mainHandler;
     private final Map<String, PendingFeedback> pendingFeedback = new ConcurrentHashMap<>();
     private final Map<String, PendingFeedback> pendingSurveys = new ConcurrentHashMap<>();
+    private final JsonObject customData = new JsonObject();
     public static final int MAX_ATTACHMENTS_PER_MESSAGE = 5;
     public static final long MAX_ATTACHMENT_BYTES = 20L * 1024 * 1024;
     private volatile WebSocket webSocket;
@@ -46,6 +47,7 @@ public final class ArtemisSocketClient {
     private int reconnectAttempts;
     private int cappedReconnectAttempts;
     private volatile int generation;
+    private volatile int historyGeneration;
     private long lastActivityAt;
     private volatile boolean newSessionRequested;
     private volatile long newSessionRevision;
@@ -112,6 +114,7 @@ public final class ArtemisSocketClient {
 
     /** Ends the Runtime conversation; disconnect() only detaches the socket. */
     public synchronized void endSession() {
+        clearCustomData();
         newSessionRequested = true;
         ++newSessionRevision;
         endingSession = true;
@@ -128,6 +131,14 @@ public final class ArtemisSocketClient {
     public String getSessionId() { return sessionId; }
     public boolean isLiveUserInputRedaction() { return liveUserInputRedaction; }
     public JsonObject getSessionScope() { return sessionScope.deepCopy(); }
+
+    /** Merge session-scoped custom data into future outgoing message frames. */
+    public synchronized void updateCustomData(JsonObject data) {
+        if (data == null) throw new IllegalArgumentException("custom data is required");
+        for (Map.Entry<String, JsonElement> entry : data.entrySet()) customData.add(entry.getKey(), entry.getValue().deepCopy());
+    }
+    public synchronized JsonObject getCustomData() { return customData.deepCopy(); }
+    public synchronized void clearCustomData() { for (String key : new ArrayList<>(customData.keySet())) customData.remove(key); }
 
     /** Existing API retains its wire contract; the overload allows UI/server ID reconciliation. */
     public void sendMessage(String text) { sendMessage(text, UUID.randomUUID().toString(), null, null); }
@@ -156,12 +167,48 @@ public final class ArtemisSocketClient {
         frame.addProperty("messageId", messageId);
         if (!isBlank(sessionId)) frame.addProperty("sessionId", sessionId);
         if (metadata != null) frame.add("metadata", metadata.deepCopy());
+        if (customData.size() > 0) frame.add("customData", customData.deepCopy());
         if (interactionContext != null) frame.add("interactionContext", interactionContext.deepCopy());
         sendFrame(frame);
     }
 
     public void submitAction(String actionId, String value, Map<String, String> formData, String renderId) {
         submitAction(actionId, value, formData, renderId, null, null);
+    }
+
+    /** Requests the Contact Center SBC fallback used when a released call has no endpoint details. */
+    public synchronized String requestContactCenterSbcDetails() {
+        requireConnectedSocket();
+        String requestId = UUID.randomUUID().toString();
+        JsonObject frame = new JsonObject();
+        frame.addProperty("type", "contact_center.sbc_details_request");
+        if (!isBlank(sessionId)) frame.addProperty("sessionId", sessionId);
+        frame.addProperty("requestId", requestId);
+        sendFrame(frame);
+        return requestId;
+    }
+
+    /** Sends the Contact Center call decision expected by the iOS/Web SDK contract. */
+    public synchronized void respondToContactCenterCall(String decision, String callId,
+                                                        String mediaSessionId, String callType,
+                                                        String conversationId, String reason) {
+        if (isBlank(decision) || !("accepted".equals(decision) || "rejected".equals(decision)
+                || "terminated".equals(decision))) {
+            throw new IllegalArgumentException("Contact Center call decision must be accepted, rejected, or terminated");
+        }
+        if (isBlank(callId) || isBlank(mediaSessionId) || isBlank(callType)) {
+            throw new IllegalArgumentException("Contact Center call identity and type are required");
+        }
+        JsonObject frame = new JsonObject();
+        frame.addProperty("type", "contact_center.call_response");
+        if (!isBlank(sessionId)) frame.addProperty("sessionId", sessionId);
+        frame.addProperty("callId", callId);
+        frame.addProperty("mediaSessionId", mediaSessionId);
+        frame.addProperty("decision", decision);
+        frame.addProperty("callType", callType);
+        if (!isBlank(conversationId)) frame.addProperty("conversationId", conversationId);
+        if (!isBlank(reason)) frame.addProperty("reason", reason);
+        sendFrame(frame);
     }
 
     public void submitAction(String actionId, String value, Map<String, String> formData, String renderId,
@@ -218,7 +265,8 @@ public final class ArtemisSocketClient {
     }
 
     private synchronized void sendFrame(JsonObject frame) {
-        if (!requireConnectedSocket().send(GSON.toJson(frame))) throw new IllegalStateException("Artemis socket rejected the message");
+        String serialized = GSON.toJson(frame);
+        if (!requireConnectedSocket().send(serialized)) throw new IllegalStateException("Artemis socket rejected the message");
         markActivity();
     }
 
@@ -673,6 +721,7 @@ public final class ArtemisSocketClient {
 
     public synchronized void shutdown() {
         if (shutdown) return;
+        clearCustomData();
         shutdown = true;
         disconnect();
         executor.shutdownNow(); attachmentExecutor.shutdownNow(); scheduler.shutdownNow();
@@ -725,6 +774,7 @@ public final class ArtemisSocketClient {
     private String requestSdkToken() throws Exception {
         long intentRevision = newSessionRevision;
         JsonObject body = new JsonObject();
+        body.addProperty("platform", "android");
         Request.Builder request = new Request.Builder().url(httpEndpoint() + "/api/v1/sdk/init")
             .header("Content-Type", "application/json");
         if (isBlank(configuration.getApiKey())) {
@@ -914,34 +964,39 @@ public final class ArtemisSocketClient {
         int epoch = generation;
         idleTask = scheduler.schedule(() -> {
             if (!current(epoch)) return;
+            notifyIdleTimeout(configuration.getIdleTimeoutMs(), configuration.isEndSessionOnIdle() ? "end_session" : "disconnect");
             if (configuration.isEndSessionOnIdle()) endSession(); else disconnect();
         }, configuration.getIdleTimeoutMs(), TimeUnit.MILLISECONDS);
     }
 
     /** Paginated Runtime history. An unsupported route leaves legacy chat usable. */
+    public synchronized void invalidateHistoryLoads() { ++historyGeneration; }
+
     public void loadHistory() {
         final int epoch = generation;
+        final int historyEpoch = historyGeneration;
         final String historySession = sessionId;
         if (isBlank(historySession) || shutdown) return;
         executor.execute(() -> {
             try {
                 JsonArray messages = new JsonArray(); String cursor = null;
-                for (int page = 0; page < 20; page++) {
-                    if (!current(epoch)) return;
+                Set<String> seenCursors = new HashSet<>();
+                for (int page = 0; page < configuration.getMaxHistoryPages(); page++) {
+                    if (!current(epoch) || historyEpoch != historyGeneration) return;
                     HttpUrl.Builder url = Objects.requireNonNull(HttpUrl.parse(httpEndpoint())).newBuilder()
                         .encodedPath("/api/projects/" + encode(configuration.getProjectId()) + "/sessions/" + encode(historySession) + "/messages")
-                        .addQueryParameter("direction", "asc").addQueryParameter("limit", "100");
+                        .addQueryParameter("direction", "asc").addQueryParameter("limit", Integer.toString(configuration.getHistoryPageSize()));
                     if (cursor != null) url.addQueryParameter("cursor", cursor);
                     JsonObject payload = executeJson(new Request.Builder().url(url.build()).header("X-SDK-Token", getToken()).build(), "History");
                     if (payload.has("messages") && payload.get("messages").isJsonArray()) messages.addAll(payload.getAsJsonArray("messages"));
                     boolean more = payload.has("hasMore") && payload.get("hasMore").getAsBoolean();
                     String next = stringValue(payload, "nextCursor");
-                    if (!more || isBlank(next) || next.equals(cursor)) break;
+                    if (!more || isBlank(next) || !seenCursors.add(next)) break;
                     cursor = next;
                 }
-                if (current(epoch) && historySession.equals(sessionId)) {
+                if (current(epoch) && historyEpoch == historyGeneration && historySession.equals(sessionId)) {
                     String body = GSON.toJson(messages);
-                    mainHandler.post(() -> { if (current(epoch) && historySession.equals(sessionId)) listener.onHistory(historySession, body); });
+                    mainHandler.post(() -> { if (current(epoch) && historyEpoch == historyGeneration && historySession.equals(sessionId)) listener.onHistory(historySession, body); });
                 }
             } catch (Exception error) { notifyLog("History unavailable; retaining the live transcript"); }
         });
@@ -1061,4 +1116,9 @@ public final class ArtemisSocketClient {
     private void notifyDisconnected(String reason) { int epoch = generation; mainHandler.post(() -> { if (epoch == generation) listener.onDisconnected(reason); }); }
     private void notifyMessage(String payload) { int epoch = generation; mainHandler.post(() -> { if (current(epoch)) listener.onMessage(payload); }); }
     private void notifyError(Throwable error) { int epoch = generation; mainHandler.post(() -> { if (epoch == generation) listener.onError(error); }); }
+    private void notifyIdleTimeout(long timeoutMs, String behavior) {
+        // The timeout notification intentionally survives the generation bump caused by the
+        // configured disconnect/end-session action; it is the public event describing that action.
+        mainHandler.post(() -> listener.onIdleTimeout(timeoutMs, behavior));
+    }
 }

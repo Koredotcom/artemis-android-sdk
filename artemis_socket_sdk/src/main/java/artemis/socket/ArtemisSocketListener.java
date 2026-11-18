@@ -19,4 +19,7 @@ public interface ArtemisSocketListener {
 
     /** Persisted history delivered only for the currently attached session. */
     default void onHistory(String sessionId, String messagesJson) { }
+
+    /** Idle timeout is reported before the configured disconnect/end-session action runs. */
+    default void onIdleTimeout(long timeoutMs, String behavior) { }
 }

@@ -224,7 +224,26 @@ internal class DefaultRichTemplateRenderer(
                     )
 
                     "image" -> image(context, templateContainer, templatePayload.asJsonObject)
+                    "deep_link" -> deepLink(context, templateContainer, templatePayload.asJsonObject)
                     "html" -> html(context, templateContainer, templatePayload.asString)
+                    "adaptive_card" -> {
+                        val card = AdaptiveCardContracts.parse(templatePayload)
+                        if (card == null) {
+                            fallback(context, templateContainer, templateTitle, templatePayload)
+                        } else {
+                            val renderId = richContentObject.string("_artemisRenderId") ?: message.actions?.string("renderId")
+                            val used = AdaptiveCardContracts.actionIds(card).filterTo(mutableSetOf()) { callbacks.isTemplateLocked(message, it, renderId) }
+                            val cardView = AdaptiveCardView(context)
+                            cardView.bind(card, theme, used, { id, value, data ->
+                                if (!callbacks.isTemplateLocked(message, id, renderId)) callbacks.onAction(message, id, value, data, renderId)
+                            }, { url -> openUrl(context, url) }, {
+                                templateContainer.removeView(cardView)
+                                cardView.destroy()
+                                fallback(context, templateContainer, templateTitle, templatePayload)
+                            })
+                            templateContainer.addView(cardView)
+                        }
+                    }
                     "video" -> video(
                         context,
                         messageViewHolder,
@@ -783,6 +802,8 @@ internal class DefaultRichTemplateRenderer(
             val quickReplyIdentifier = item.readString("id") ?: return@forEach
             val quickReplyLabel = item.readString("label") ?: return@forEach
             quickReplyChipGroup.addView(templateChip(context, parent).apply {
+                chipBackgroundColor = android.content.res.ColorStateList.valueOf(android.graphics.Color.TRANSPARENT)
+                chipStrokeColor = android.content.res.ColorStateList.valueOf(androidx.core.graphics.ColorUtils.setAlphaComponent(currentTextColor, 55))
                 text = quickReplyLabel
                 imageUrl(item.string("icon_url"))?.let { source -> loadImage(source) { bitmap -> if (bitmap != null) {
                     chipIcon = android.graphics.drawable.BitmapDrawable(context.resources, bitmap)
@@ -897,6 +918,25 @@ internal class DefaultRichTemplateRenderer(
         try {
             context.startActivity(Intent(Intent.ACTION_VIEW, resolved.toUri()))
         } catch (_: ActivityNotFoundException) {
+        }
+    }
+
+    private fun deepLink(context: Context, parent: LinearLayout, data: JsonObject) {
+        val template = TemplateContracts.deepLink(data, handle?.config?.connection?.endpoint)
+        template.text?.let { prompt ->
+            addText(context, parent, prompt, bold = true)
+        }
+        template.elements.forEach { element ->
+            val resolved = element.url
+            val button = templateButton(context, parent).apply {
+                text = element.title
+                setOnClickListener {
+                    // ACTION_VIEW resolves application-registered app links first, then the platform handler.
+                    // External links use the same validated platform URL mechanism.
+                    if (element.navigation == TemplateContracts.DeepLinkNavigation.INTERNAL) openActionUrl(context, resolved) else openUrl(context, resolved)
+                }
+            }
+            parent.addView(button, createMatchParentWrapContentLayoutParams(context))
         }
     }
 

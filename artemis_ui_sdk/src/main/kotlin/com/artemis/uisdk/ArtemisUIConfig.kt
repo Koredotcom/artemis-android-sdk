@@ -113,6 +113,16 @@ data class ArtemisSessionConfig(
     val endSessionOnClose: Boolean = false,
 )
 
+/** Bounded history retrieval; defaults preserve the original Android behavior. */
+data class ArtemisHistoryConfig(val pageSize: Int = 100, val maxPages: Int = 20) {
+    init { require(pageSize in 1..200 && maxPages in 1..1000) { "Invalid history pagination" } }
+}
+
+/** Optional Contact Center media stack override. Runtime's versioned AudioCodes asset is used by default. */
+data class ArtemisContactCenterConfig @JvmOverloads constructor(
+    val sipStackUrl: String? = null,
+)
+
 class ArtemisUIConfig @JvmOverloads constructor(
     val connection: ArtemisConnectionConfig,
     val reconnection: ArtemisReconnectionConfig = ArtemisReconnectionConfig(),
@@ -124,6 +134,8 @@ class ArtemisUIConfig @JvmOverloads constructor(
     val logoResolver: ArtemisLogoResolver? = null,
     val typography: ArtemisTypographyConfig = ArtemisTypographyConfig(),
     val welcomeMessage: String? = null,
+    val contactCenter: ArtemisContactCenterConfig = ArtemisContactCenterConfig(),
+    val history: ArtemisHistoryConfig = ArtemisHistoryConfig(),
 ) {
     init {
         val uri = runCatching { URI(connection.endpoint) }.getOrNull()
@@ -158,7 +170,7 @@ class ArtemisUIConfig @JvmOverloads constructor(
     }
 
     override fun toString() =
-        "ArtemisUIConfig(connection=$connection, reconnection=$reconnection, features=$features, theme=$theme)"
+        "ArtemisUIConfig(connection=$connection, reconnection=$reconnection, features=$features, theme=$theme, contactCenter=$contactCenter)"
 }
 
 /** Loads a safe YAML asset and recursively applies an optional environment override. */
@@ -205,6 +217,7 @@ object ArtemisConfigLoader {
         val features = configurationRoot.nestedMap("features")
         val chat = configurationRoot.nestedMap("chat")
         val theme = configurationRoot.nestedMap("theme")
+        val contactCenter = configurationRoot.nestedMap("contact_center")
         val apiKey = connection.readString("api_key")
         return ArtemisUIConfig(
             connection = ArtemisConnectionConfig(
@@ -281,6 +294,13 @@ object ArtemisConfigLoader {
                 ArtemisTypographyConfig(typeface = Typeface.create(family, Typeface.NORMAL))
             } ?: ArtemisTypographyConfig(),
             welcomeMessage = chat.readString("welcome_message"),
+            contactCenter = ArtemisContactCenterConfig(
+                sipStackUrl = contactCenter.readString("sip_stack_url")?.trim()?.takeIf(String::isNotBlank),
+            ),
+            history = ArtemisHistoryConfig(
+                pageSize = chat.readInteger("history_page_size", 100),
+                maxPages = chat.readInteger("max_history_pages", 20),
+            ),
             theme = ArtemisThemeConfig(
                 mode = if (theme.readBoolean(
                         "dark_mode",

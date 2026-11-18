@@ -5,6 +5,23 @@ import com.google.gson.JsonObject
 
 /** Presentation decisions kept independent of Android views for contract regression tests. */
 internal object TemplateContracts {
+    enum class DeepLinkNavigation { INTERNAL, EXTERNAL }
+    data class DeepLinkElement(val title: String, val url: String, val navigation: DeepLinkNavigation)
+    data class DeepLinkTemplate(val text: String?, val lang: String?, val elements: List<DeepLinkElement>)
+
+    fun deepLink(value: JsonObject, base: String? = null): DeepLinkTemplate {
+        val elements = value.array("elements")?.mapNotNull { raw ->
+            val item = raw.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+            val title = item.string("title")?.trim()?.takeIf(String::isNotEmpty) ?: return@mapNotNull null
+            val url = actionUrl(item.string("url"), base) ?: return@mapNotNull null
+            // Deep links are HTTP(S) destinations; reject mailto/tel as navigation targets.
+            val parsed = runCatching { URI(url) }.getOrNull() ?: return@mapNotNull null
+            if (parsed.scheme?.lowercase() !in setOf("http", "https")) return@mapNotNull null
+            DeepLinkElement(title, url, if (item.string("navigation_type").equals("internal", true)) DeepLinkNavigation.INTERNAL else DeepLinkNavigation.EXTERNAL)
+        }?.take(50).orEmpty()
+        return DeepLinkTemplate(value.string("text")?.trim()?.takeIf(String::isNotEmpty), value.string("lang"), elements)
+    }
+
     fun actionValue(button: JsonObject): String? {
         val value = button.get("value") ?: button.get("payload")
         return if (value == null || value.isJsonNull) button.string("id") else if (value.isJsonPrimitive && value.asJsonPrimitive.isString) value.asString else value.toString()

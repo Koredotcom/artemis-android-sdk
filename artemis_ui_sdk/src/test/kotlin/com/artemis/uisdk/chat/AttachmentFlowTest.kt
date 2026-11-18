@@ -31,6 +31,8 @@ class AttachmentFlowTest {
     private val context get() = RuntimeEnvironment.getApplication()
     private lateinit var file: File
     private lateinit var provider: Provider
+    private val events = mutableListOf<ArtemisUiEvent>()
+    private var eventRegistration: AutoCloseable? = null
     private val uri = Uri.parse("content://sdk.attachment.test/file")
     private fun start(features: ArtemisFeatureConfig = ArtemisFeatureConfig(attachments = true, contactCenter = true)) {
         file = File.createTempFile("attachment", ".pdf").apply { writeBytes(ByteArray(100000)) }
@@ -38,6 +40,7 @@ class AttachmentFlowTest {
         ShadowContentResolver.registerProviderInternal("sdk.attachment.test", provider)
         handle = ArtemisUI.initialize(context, ArtemisUIConfig(ArtemisConnectionConfig("https://runtime.example.com", "project", "pk", channelName = "mobile"), features = features))
         vm = ArtemisChatViewModel(handle, wire::create); handle.chatViewModel = vm
+        eventRegistration = handle.addListener { synchronized(events) { events.add(it) } }
         vm.start(); await { wire.socketListener != null }
         synchronized(wire.client) { }
         wire.receive("""{"type":"session_start","sessionId":"runtime-session"}""")
@@ -51,6 +54,7 @@ class AttachmentFlowTest {
         ShadowLooper.idleMainLooper(); assertTrue("Timed out waiting for UI fixture", condition())
     }
     @After fun close() {
+        eventRegistration?.close()
         if (::handle.isInitialized) handle.close()
         ShadowLooper.idleMainLooper()
         if (::file.isInitialized) file.delete()
@@ -68,11 +72,26 @@ class AttachmentFlowTest {
     @Test fun failedUploadCanRetryAndTextDraftSurvivesMinimizeReopen() {
         start(); vm.updateComposerDraft("draft text"); wire.uploadStatus = 503
         vm.uploadAttachment(uri); await { vm.state.value.attachmentUploadFailed }
+        assertTrue(synchronized(events) { events.any { it is ArtemisUiEvent.AttachmentError && it.filename == "invoice.pdf" } })
         assertEquals("draft text", vm.composerDraft); assertFalse(vm.sendComposedMessage("draft text"))
         handle.createChatFragment(); handle.minimizeChat(); handle.createChatFragment()
         assertSame(vm, handle.chatViewModel); assertEquals("draft text", vm.composerDraft)
         wire.uploadStatus = 200; vm.retryAttachment(); await { vm.state.value.pendingAttachment != null }
         assertTrue(vm.sendComposedMessage(vm.composerDraft)); assertEquals("", vm.composerDraft)
+    }
+
+    @Test fun acceptedTextPublishesMessageSentAndTypingTransitions() {
+        start()
+        assertTrue(vm.sendText("hello"))
+        ShadowLooper.idleMainLooper()
+        val sent = synchronized(events) { events.toList() }
+        assertTrue(sent.any { it is ArtemisUiEvent.Message && it.message.text == "hello" })
+        assertTrue(sent.any { it is ArtemisUiEvent.MessageSent })
+        assertTrue(sent.any { it == ArtemisUiEvent.Typing(true) })
+        wire.receive("""{"type":"response_start","messageId":"assistant"}""")
+        wire.receive("""{"type":"response_end","messageId":"assistant","content":"done"}""")
+        await { !vm.state.value.isTyping }
+        assertTrue("events=$events", synchronized(events) { events.any { it == ArtemisUiEvent.Typing(false) } })
     }
     @Test fun removeFailedAttachmentRestoresTextOnlySending() {
         start(); wire.uploadStatus = 415; vm.uploadAttachment(uri); await { vm.state.value.attachmentUploadFailed }
@@ -162,6 +181,48 @@ class AttachmentFlowTest {
         await { vm.state.value.messages.last().transferSurvey!!.status == SurveySubmissionStatus.SUBMITTED }
         val completed = wire.frames.size; vm.submitTransferSurvey(id, 4, null); assertEquals(completed, wire.frames.size)
         assertTrue(vm.sendComposedMessage("back to assistant"))
+    }
+
+    @Test fun phaseOnePublicEventsAreForwardedWithoutReplacingLegacyStateEvents() {
+        start()
+        wire.receive("""{"type":"status_update","text":"Working","operation":"tool","fillerId":"f1","turnId":"t1"}""")
+        wire.receive("""{"type":"status_clear"}""")
+        wire.receive("""{"type":"response_start","messageId":"a"}""")
+        wire.receive("""{"type":"response_chunk","messageId":"a","chunk":"Hello"}""")
+        wire.receive("""{"type":"response_end","messageId":"a","content":"Hello"}""")
+        wire.receive("""{"type":"auth_challenge","sessionId":"runtime-session","toolCallId":"tool","authType":"oauth","profileId":"p","profileName":"Profile","prompt":"Authorize","timeoutMs":1000}""")
+        wire.receive("""{"type":"feedback.ack","messageId":"a","success":true,"feedbackId":"f"}""")
+        wire.receive("""{"type":"agent_transfer_event","sessionId":"transfer","event":{"type":"agent:joined","data":{"noticeText":"Agent joined"}}}""")
+        wire.receive("""{"type":"agent_transfer_event","sessionId":"transfer","event":{"type":"agent:exited","data":{"noticeText":"Agent exited"}}}""")
+        wire.receive("""{"type":"agent_transfer_event","sessionId":"transfer","event":{"type":"agent:notice","data":{"noticeText":"Please hold"}}}""")
+        wire.receive("""{"type":"auth_required","sessionId":"runtime-session","pending":[],"satisfied":[]}""")
+        wire.receive("""{"type":"auth_gate_satisfied","sessionId":"runtime-session"}""")
+        wire.receive("""{"type":"auth_challenge_resolved","sessionId":"runtime-session","toolCallId":"tool","outcome":"authorized"}""")
+        wire.receive("""{"type":"message_queued","reason":"auth_gate_active"}""")
+        wire.receive("""{"type":"initial_assistant_message_status","source":"dsl_on_start","status":"completed","rendered":true}""")
+        wire.receive("""{"type":"session_end","reason":"server"}""")
+        wire.receive("""{"type":"agent_media","event":{"type":"agent:media","data":{"providerEventType":"call_agent_webrtc","mediaKind":"webrtc_call","action":"invite","callType":"audio","conversationId":"c","mediaSessionId":"m","idempotencyKey":"i"}}}""")
+        wire.receive("""{"type":"agent_media","event":{"type":"agent:media","data":{"providerEventType":"call_agent_webrtc_terminated","mediaKind":"webrtc_call","action":"terminated","callId":"m","reason":"remote_ended"}}}""")
+        ShadowLooper.idleMainLooper()
+        val snapshot = synchronized(events) { events.toList() }
+        assertTrue(snapshot.any { it is ArtemisUiEvent.StatusUpdate && it.text == "Working" && it.operation == "tool" })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.StatusClear })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.MessageChunk && it.messageId == "a" && it.chunk == "Hello" })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.Message && it.message.messageId == "a" })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.FeedbackAck && it.feedbackId == "f" })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.AuthChallenge })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.AuthRequired })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.AuthGateSatisfied })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.AuthChallengeResolved })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.MessageQueued })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.AgentJoined && it.sessionId == "transfer" })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.AgentExited && it.sessionId == "transfer" })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.AgentNotice && it.sessionId == "transfer" })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.InitialAssistantMessageStatus })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.SessionEnded && it.reason == "server" })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.ContactCenterIncomingCall && it.call.callId == "m" })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.ContactCenterCallEnded && it.callId == "m" })
+        assertTrue(snapshot.any { it is ArtemisUiEvent.ContactCenterUnsupported })
     }
     class Provider(private val file: File) : ContentProvider() {
         @Volatile var queried = false; @Volatile var queriedOnMain = false; @Volatile var openedOnMain = false

@@ -15,9 +15,7 @@ import artemis.socket.ArtemisSocketListener
 import com.artemis.uisdk.ArtemisUiEvent
 import com.artemis.uisdk.ArtemisUiHandle
 import com.artemis.uisdk.BuildConfig
-import com.google.gson.Gson
 import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,18 +27,14 @@ class ArtemisChatViewModel internal constructor(
 ) : ViewModel() {
     constructor(handle: ArtemisUiHandle) : this(handle, ::ArtemisSocketClient)
 
-    private companion object {
-        const val RESPONSE_LOG_TAG = "ArtemisUI"
-        const val RESPONSE_LOG_CHUNK_SIZE = 3000
-    }
-
     private fun label(id: Int, vararg args: Any) = artemisUiHandle.text(id, *args)
     private var lastAttachmentPolicyError: String? = null
     private val attachmentsDisabledMessage get() = label(com.artemis.uisdk.R.string.artemis_attachments_disabled).also { lastAttachmentPolicyError = it }
     private val mainThreadHandler = Handler(Looper.getMainLooper())
-    private val gsonSerializer = Gson()
     private val mutableChatUiState = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = mutableChatUiState.asStateFlow()
+    private val mutableInitializationComplete = MutableStateFlow(false)
+    val initializationComplete: StateFlow<Boolean> = mutableInitializationComplete.asStateFlow()
     private val transcript = ChatTranscript(artemisUiHandle.config.features.contactCenter, artemisUiHandle.config.features.attachments, artemisUiHandle.config.features.authentication)
     private val authorizationRequests = mutableMapOf<String, com.artemis.uisdk.ArtemisAuthorizationRequest>()
     private val authorizationOperations = mutableMapOf<Pair<String, String>, String>()
@@ -55,6 +49,11 @@ class ArtemisChatViewModel internal constructor(
     private var activeAttachmentId: String? = null
     private var activeAttachmentUpload: artemis.socket.ArtemisAttachmentUpload? = null
     private var historyTransferRevision = 0L
+    private var contactCenterSbcRequestId: String? = null
+    private var contactCenterSbcDetails: AgentMediaSbcDetails? = null
+    private val endedContactCenterCalls = linkedSetOf<String>()
+    private val seenAgentTransferDeliveryIds = linkedSetOf<String>()
+    private var seenAgentTransferDeliverySessionId: String? = null
     private val templateDrafts = linkedMapOf<String, Pair<JsonObject, Map<String, String>>>()
     private val feedbackDrafts = linkedMapOf<String, Pair<JsonObject, FeedbackDraft>>()
     private val feedbackOperations = mutableMapOf<String, String>()
@@ -91,6 +90,7 @@ class ArtemisChatViewModel internal constructor(
                 .unlimitedTransientReconnect(artemisUiHandle.config.reconnection.unlimitedTransientRetries)
                 .idleDisconnect(artemisUiHandle.config.session.idleDisconnectTimeoutMs, artemisUiHandle.config.session.endSessionOnIdle)
                 .staleSessionRefresh(artemisUiHandle.config.session.staleSessionRefreshMs)
+                .historyPagination(artemisUiHandle.config.history.pageSize, artemisUiHandle.config.history.maxPages)
                 .reconnection(
                     artemisUiHandle.config.reconnection.enabled,
                     artemisUiHandle.config.reconnection.maxAttempts,
@@ -107,6 +107,17 @@ class ArtemisChatViewModel internal constructor(
         }
     }
 
+    fun updateCustomData(data: JsonObject) { artemisSocketClient?.updateCustomData(data.deepCopy()) }
+    fun getCustomData(): JsonObject = artemisSocketClient?.customData ?: JsonObject()
+    fun clearCustomData() { artemisSocketClient?.clearCustomData() }
+    /** Clear local presentation only; server history remains available on later reload. */
+    fun clearHistory() {
+        artemisSocketClient?.invalidateHistoryLoads()
+        transcript.clearMessages()
+        setState(transcript.state)
+        artemisUiHandle.emit(ArtemisUiEvent.MessagesReplaced(emptyList()))
+    }
+
     @JvmOverloads
     fun sendText(text: String, metadata: JsonObject? = null, interactionContext: JsonObject? = null): Boolean {
         val value = text.trim()
@@ -114,11 +125,15 @@ class ArtemisChatViewModel internal constructor(
         val client = artemisSocketClient ?: return false
         if (mutableChatUiState.value.connectionStatus != ConnectionStatus.CONNECTED || mutableChatUiState.value.isOffline) return false
         val id = UUID.randomUUID().toString()
+        val previousActivityState = mutableChatUiState.value
         try {
             client.sendMessage(value, id, metadata, interactionContext)
             transcript.acceptedUser(id, value, metadata)
             setState(transcript.state)
             artemisUiHandle.emit(ArtemisUiEvent.MessageChanged(id, "user"))
+            transcript.state.messages.find { it.messageId == id }?.let { artemisUiHandle.emit(ArtemisUiEvent.Message(it)) }
+            artemisUiHandle.emit(ArtemisUiEvent.MessageSent(id))
+            emitLocalActivityTransitions(previousActivityState, mutableChatUiState.value)
             return true
         } catch (error: RuntimeException) {
             setState(mutableChatUiState.value.copy(errorMessage = label(com.artemis.uisdk.R.string.artemis_send_failed)))
@@ -290,6 +305,7 @@ class ArtemisChatViewModel internal constructor(
         }
         setState(state.value.copy(attachmentsUnavailable = state.value.attachmentsUnavailable || code == "ATTACHMENTS_UNAVAILABLE", errorMessage = message))
         publishAttachmentState()
+        artemisUiHandle.emit(ArtemisUiEvent.AttachmentError(item.draft.attachment.filename.takeIf(String::isNotBlank) ?: "Attachment", message))
         artemisUiHandle.emit(ArtemisUiEvent.Error(code, message, true))
         startNextAttachment()
     }
@@ -356,6 +372,7 @@ class ArtemisChatViewModel internal constructor(
         val attachments = selected.map { it.draft.attachment }
         val id = UUID.randomUUID().toString()
         val metadata = AttachmentMime.metadata(attachments)
+        val previousActivityState = mutableChatUiState.value
         try {
             client.sendMessage(value, id, metadata, null, attachments.map { it.id })
             transcript.acceptedUser(id, value, metadata)
@@ -364,6 +381,9 @@ class ArtemisChatViewModel internal constructor(
             updateMessage(id) { it.copy(attachments = attachments) }
             removePendingAttachment(); composerDraft = ""
             artemisUiHandle.emit(ArtemisUiEvent.MessageChanged(id, "user"))
+            transcript.state.messages.find { it.messageId == id }?.let { artemisUiHandle.emit(ArtemisUiEvent.Message(it)) }
+            artemisUiHandle.emit(ArtemisUiEvent.MessageSent(id))
+            emitLocalActivityTransitions(previousActivityState, mutableChatUiState.value)
             return true
         } catch (error: RuntimeException) { contactCenterError(label(com.artemis.uisdk.R.string.artemis_attachment_send_failed)); return false }
     }
@@ -376,15 +396,84 @@ class ArtemisChatViewModel internal constructor(
             val client = artemisSocketClient ?: return
             client.resolveAttachmentDownloadUrl(attachment.id, object : artemis.socket.ArtemisAttachmentUrlCallback {
                 override fun onSuccess(url: String) { if (!isClosed && state.value.sessionId == owningSession) onResolved(url) }
-                override fun onFailure(code: String, message: String) { if (!isClosed && state.value.sessionId == owningSession) contactCenterError(message) }
+                override fun onFailure(code: String, message: String) {
+                    if (!isClosed && state.value.sessionId == owningSession) {
+                        artemisUiHandle.emit(ArtemisUiEvent.AttachmentError(attachment.filename, message))
+                        contactCenterError(message)
+                    }
+                }
             })
-        } catch (error: RuntimeException) { contactCenterError(label(com.artemis.uisdk.R.string.artemis_attachment_reconnect)) }
+        } catch (error: RuntimeException) {
+            val message = label(com.artemis.uisdk.R.string.artemis_attachment_reconnect)
+            artemisUiHandle.emit(ArtemisUiEvent.AttachmentError(attachment.filename, message))
+            contactCenterError(message)
+        }
     }
 
     fun contactCenterError(message: String) {
         setState(state.value.copy(errorMessage = message))
         artemisUiHandle.emit(ArtemisUiEvent.Error("CONTACT_CENTER", message, true))
     }
+
+    /** Sends the iOS/Web SDK Contact Center call control event after an invite decision. */
+    fun respondToAgentMediaInvite(invite: AgentMediaInvite, accepted: Boolean): Boolean {
+        val client = artemisSocketClient
+        if (client == null || !client.isConnected || state.value.isOffline) {
+            contactCenterCallError(label(com.artemis.uisdk.R.string.artemis_call_response_failed))
+            return false
+        }
+        val decision = if (accepted) "accepted" else "rejected"
+        val callId = invite.callId ?: invite.mediaSessionId ?: invite.conversationId ?: return false
+        val mediaSessionId = invite.mediaSessionId ?: callId
+        return try {
+            client.respondToContactCenterCall(
+                decision,
+                callId,
+                mediaSessionId,
+                invite.callType,
+                invite.conversationId,
+                if (accepted) null else "user_rejected",
+            )
+            if (!accepted) {
+                artemisUiHandle.emit(ArtemisUiEvent.ContactCenterCallRejected(callId, "user_rejected"))
+                artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged("ended", "user_rejected", callId))
+            }
+            true
+        } catch (_: RuntimeException) {
+            contactCenterCallError(label(com.artemis.uisdk.R.string.artemis_call_response_failed))
+            false
+        }
+    }
+
+    private fun contactCenterCallError(message: String) {
+        setState(state.value.copy(errorMessage = message))
+        artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged("error", message))
+        artemisUiHandle.emit(ArtemisUiEvent.ContactCenterError(message))
+        artemisUiHandle.emit(ArtemisUiEvent.Error("CONTACT_CENTER", message, true))
+    }
+
+    fun terminateAgentMediaCall(endpoint: AgentMediaEndpoint, reason: String): Boolean {
+        val client = artemisSocketClient ?: return false
+        if (!client.isConnected || state.value.isOffline) return false
+        val sent = runCatching {
+            client.respondToContactCenterCall(
+                "terminated",
+                endpoint.callId,
+                endpoint.mediaSessionId,
+                endpoint.callType,
+                endpoint.conversationId,
+                reason,
+            )
+        }.isSuccess
+        if (sent && endedContactCenterCalls.add(endpoint.callId)) {
+            while (endedContactCenterCalls.size > 100) endedContactCenterCalls.remove(endedContactCenterCalls.first())
+            artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged("ended", reason, endpoint.callId))
+            artemisUiHandle.emit(ArtemisUiEvent.ContactCenterCallEnded(endpoint.callId, reason))
+        }
+        return sent
+    }
+
+    fun currentContactCenterSbcDetails(): AgentMediaSbcDetails? = contactCenterSbcDetails
 
     fun markActivity() { artemisSocketClient?.markActivity() }
 
@@ -504,14 +593,26 @@ class ArtemisChatViewModel internal constructor(
     ) {
         if (isClosed || mutableChatUiState.value.connectionStatus != ConnectionStatus.CONNECTED || mutableChatUiState.value.isOffline) return
         val sourceMessage = mutableChatUiState.value.messages.find { it.messageId == messageId } ?: return
-        val isQuickReply = sourceMessage?.let { templatePayloads(it, "quick_replies").any { replies -> replies.takeIf { it.isJsonArray }?.asJsonArray?.any { it.isJsonObject && it.asJsonObject.string("id") == actionIdentifier } == true } } == true
+        val isQuickReply = templatePayloads(sourceMessage, "quick_replies").any { replies ->
+            replies.takeIf { it.isJsonArray }?.asJsonArray?.any {
+                it.isJsonObject && it.asJsonObject.string("id") == actionIdentifier
+            } == true
+        }
         val actionLockKey = renderIdentifier?.let { "render:$it" } ?: "$messageId:${if (isQuickReply) "quick_replies" else actionIdentifier}"
         val displayLabel = if (formData == null) actionDisplayLabel(sourceMessage, actionIdentifier) else null
         val displayId = if (displayLabel != null) UUID.randomUUID().toString() else null
+        val previousActivityState = mutableChatUiState.value
         if (!lockedActionKeys.add(actionLockKey)) return
         try {
             artemisSocketClient?.submitAction(actionIdentifier, actionValue, formData, renderIdentifier, displayLabel, displayId)
-            if (displayId != null && displayLabel != null) { transcript.acceptedUser(displayId, displayLabel); setState(transcript.state) }
+            if (displayId != null && displayLabel != null) {
+                transcript.acceptedUser(displayId, displayLabel)
+                setState(transcript.state)
+                transcript.state.messages.find { it.messageId == displayId }?.let {
+                    artemisUiHandle.emit(ArtemisUiEvent.Message(it))
+                    artemisUiHandle.emit(ArtemisUiEvent.MessageChanged(displayId, "user"))
+                }
+            }
             updateMessage(messageId) { message ->
                 val actions = message.actions?.deepCopy()
                 if (renderIdentifier != null) actions?.add("submitted", JsonObject().apply {
@@ -520,7 +621,18 @@ class ArtemisChatViewModel internal constructor(
                 })
                 message.copy(actions = actions, presentationVersion = message.presentationVersion + 1)
             }
-            setState(mutableChatUiState.value.copy(isTyping = true, errorMessage = null))
+            // Web emits messagesReplaced when a submitted render is reflected
+            // back into an existing message. Keep the state-flow update and the
+            // public event in lockstep for native hosts.
+            if (renderIdentifier != null) {
+                artemisUiHandle.emit(ArtemisUiEvent.MessagesReplaced(mutableChatUiState.value.messages.toList()))
+            }
+            if (actionIdentifier == "feedback") {
+                setState(mutableChatUiState.value.copy(errorMessage = null))
+            } else {
+                setState(mutableChatUiState.value.copy(isTyping = true, errorMessage = null))
+                emitLocalActivityTransitions(previousActivityState, mutableChatUiState.value)
+            }
         } catch (error: RuntimeException) {
             lockedActionKeys.remove(actionLockKey)
             updateMessage(messageId) { it.copy(presentationVersion = it.presentationVersion + 1) }
@@ -686,6 +798,7 @@ class ArtemisChatViewModel internal constructor(
     private fun applyAttachmentPolicy(scope: JsonObject) {
         if (isClosed) return
         artemisUiHandle.applyRuntimeBranding(scope)
+        mutableInitializationComplete.value = true
         val wasEnabled = attachmentsEnabled
         val setting = scope.obj("widgetConfig")?.obj("theme")?.get("attachmentButtonEnabled")
         val brandingEnabled = setting?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive?.let {
@@ -710,11 +823,13 @@ class ArtemisChatViewModel internal constructor(
         override fun onLog(message: String) {
             if (BuildConfig.DEBUG && message.startsWith("ATTACHMENT ")) Log.d("ArtemisAttachment", message)
         }
-        override fun onConnecting() = update { chatUiState ->
-            chatUiState.copy(connectionStatus = ConnectionStatus.CONNECTING)
+        override fun onConnecting() {
+            if (BuildConfig.DEBUG) Log.d("ArtemisSocket", "Connection state=CONNECTING")
+            update { chatUiState -> chatUiState.copy(connectionStatus = ConnectionStatus.CONNECTING) }
         }
         override fun onConnected(sessionId: String) {
             if (isClosed) return
+            if (BuildConfig.DEBUG) Log.d("ArtemisSocket", "Connection state=CONNECTED sessionAvailable=${sessionId.isNotBlank()}")
             artemisUiHandle.confirmSession()
             applyAttachmentPolicy(artemisSocketClient?.sessionScope ?: JsonObject())
             update { chatUiState ->
@@ -728,6 +843,7 @@ class ArtemisChatViewModel internal constructor(
         }
         override fun onDisconnected(reason: String) {
             if (isClosed) return
+            if (BuildConfig.DEBUG) Log.d("ArtemisSocket", "Connection state=DISCONNECTED")
             update { chatUiState ->
                 chatUiState.copy(connectionStatus = ConnectionStatus.DISCONNECTED, isTyping = false, messages = chatUiState.messages.map { m ->
                     m.copy(authorization = m.authorization?.let { card -> card.copy(rows = card.rows.map { row ->
@@ -737,15 +853,23 @@ class ArtemisChatViewModel internal constructor(
             }
             pruneAuthorizationOperations()
             artemisUiHandle.emit(ArtemisUiEvent.ConnectionChanged("DISCONNECTED", reason))
+            if (contactCenterEnabled) artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged("disabled", reason))
         }
         override fun onMessage(payload: String) { if (!isClosed) parseFrame(payload) }
         override fun onHistory(sessionId: String, messagesJson: String) {
             if (isClosed || sessionId != mutableChatUiState.value.sessionId) return
             transcript.mergeHistory(ChatFrameParser.history(messagesJson), historyTransferRevision)
             setState(transcript.state)
+            artemisUiHandle.emit(ArtemisUiEvent.MessagesReplaced(transcript.state.messages.toList()))
+        }
+        override fun onIdleTimeout(timeoutMs: Long, behavior: String) {
+            if (!isClosed) artemisUiHandle.emit(ArtemisUiEvent.IdleTimeout(timeoutMs, behavior))
         }
         override fun onError(error: Throwable) {
             if (isClosed) return
+            // Reveal the normal error/retry UI if init fails before returning a scope.
+            mutableInitializationComplete.value = true
+            if (BuildConfig.DEBUG) Log.w("ArtemisSocket", "Socket error=${error.javaClass.simpleName}")
             val errorDescription = safeError(error)
             update { chatUiState -> chatUiState.copy(errorMessage = errorDescription) }
             artemisUiHandle.emit(ArtemisUiEvent.Error("CONNECTION", errorDescription, true))
@@ -753,10 +877,25 @@ class ArtemisChatViewModel internal constructor(
     }
 
     private fun parseFrame(payload: String) {
-        val frame = ChatFrameParser.parse(payload) ?: return
+        val frame = ChatFrameParser.parse(payload)
+        if (BuildConfig.DEBUG) {
+            Log.d("ArtemisSocket", "Inbound frame parsed=${frame != null}")
+        }
+        frame ?: return
+        if (frame is ChatFrame.Transfer) {
+            if (seenAgentTransferDeliverySessionId != frame.sessionId) {
+                seenAgentTransferDeliverySessionId = frame.sessionId
+                seenAgentTransferDeliveryIds.clear()
+            }
+            val deliveryId = frame.payload?.string("deliveryId")?.takeIf(String::isNotBlank)
+            if (deliveryId != null && !seenAgentTransferDeliveryIds.add(deliveryId)) return
+            while (seenAgentTransferDeliveryIds.size > 200) {
+                seenAgentTransferDeliveryIds.remove(seenAgentTransferDeliveryIds.first())
+            }
+        }
         transcript.configureScope(artemisSocketClient?.sessionScope ?: JsonObject())
-        if (frame is ChatFrame.Activity && !artemisUiHandle.config.features.activityUpdates) return
         val previousSession = transcript.state.sessionId
+        val previousState = transcript.state
         transcript.apply(frame)
         if (frame is ChatFrame.Error && frame.code?.startsWith("AUTH_") == true && artemisUiHandle.config.features.authentication) {
             transcript.update(transcript.state.copy(messages = transcript.state.messages.map { m ->
@@ -768,37 +907,258 @@ class ArtemisChatViewModel internal constructor(
         if (frame is ChatFrame.Session && previousSession != transcript.state.sessionId) {
             clearAuthorizationOperations()
             lockedActionKeys.clear(); surveyDrafts.clear(); templateDrafts.clear(); feedbackDrafts.clear(); feedbackOperations.clear(); clearAttachmentQueue()
+            contactCenterSbcRequestId = null
+            contactCenterSbcDetails = null
+            endedContactCenterCalls.clear()
+            seenAgentTransferDeliveryIds.clear()
+            seenAgentTransferDeliverySessionId = null
+        }
+        if (frame is ChatFrame.Session && contactCenterEnabled) {
+            val capabilities = frame.payload.obj("capabilities")?.obj("contactCenter")
+            if (capabilities?.flag("enabled") == true && capabilities.flag("sbcDetails") &&
+                contactCenterSbcRequestId == null && artemisSocketClient?.isConnected == true) {
+                artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged("sbc_pending"))
+                contactCenterSbcRequestId = runCatching { artemisSocketClient?.requestContactCenterSbcDetails() }.getOrNull()
+            } else if (capabilities == null || capabilities.flag("enabled") != true) {
+                val reason = capabilities?.string("disabledReason") ?: "Contact Center is not enabled for this session"
+                artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged("unsupported"))
+                artemisUiHandle.emit(ArtemisUiEvent.ContactCenterUnsupported(
+                    reason, capabilities?.deepCopy()
+                ))
+            } else if (capabilities.flag("sbcDetails") != true) {
+                val reason = "Contact Center SBC details are not enabled for this session"
+                artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged("unsupported", reason))
+                artemisUiHandle.emit(ArtemisUiEvent.ContactCenterUnsupported(reason, capabilities.deepCopy()))
+            }
         }
         setState(transcript.state)
         if (frame is ChatFrame.Authorization || frame is ChatFrame.Error) pruneAuthorizationOperations()
-        if (frame is ChatFrame.End) {
-            mutableChatUiState.value.messages.find { it.messageId == frame.message.messageId }?.let(::logBotResponse)
-            artemisUiHandle.emit(ArtemisUiEvent.MessageChanged(frame.message.messageId, "assistant"))
-        }
+        emitFrameEvents(frame, previousState, previousSession)
         if (frame is ChatFrame.Transfer && contactCenterEnabled && transcript.state.sessionId != null) {
-            frame.messages.forEach { artemisUiHandle.emit(ArtemisUiEvent.MessageChanged(it.messageId, it.role.name.lowercase())) }
             artemisUiHandle.emit(ArtemisUiEvent.AgentTransferChanged(transcript.state.agentTransferStatus.name))
+            frame.mediaFrame?.let(::emitContactCenterMediaEvent)
+        }
+        if (frame is ChatFrame.ContactCenterMedia && contactCenterEnabled) {
+            emitContactCenterMediaEvent(frame.event)
         }
         if (frame is ChatFrame.Cancel) artemisUiHandle.emit(ArtemisUiEvent.ResponseCancelled(frame.id, frame.reason))
     }
 
-    /** Full response details can contain user data; keep verbose response logging out of release builds. */
-    private fun logBotResponse(assistantMessage: ChatMessage) {
-        if (!BuildConfig.DEBUG) return
-        val serializedResponse = gsonSerializer.toJson(JsonObject().apply {
-            addProperty("messageId", assistantMessage.messageId)
-            addProperty("text", assistantMessage.text)
-            assistantMessage.richContent?.let { richContent -> add("richContent", richContent.deepCopy()) }
-            assistantMessage.actions?.let { messageActions -> add("actions", messageActions.deepCopy()) }
-        })
-        var logStartIndex = 0
-        var logPartNumber = 1
-        while (logStartIndex < serializedResponse.length) {
-            var logEndIndex = (logStartIndex + RESPONSE_LOG_CHUNK_SIZE).coerceAtMost(serializedResponse.length)
-            if (logEndIndex < serializedResponse.length && Character.isHighSurrogate(serializedResponse[logEndIndex - 1])) logEndIndex--
-            Log.d(RESPONSE_LOG_TAG, "Bot response [$logPartNumber]: ${serializedResponse.substring(logStartIndex, logEndIndex)}")
-            logStartIndex = logEndIndex
-            logPartNumber++
+    private fun emitFrameEvents(frame: ChatFrame, previousState: ChatUiState, previousSession: String?) {
+        val current = transcript.state
+        fun emitTypingTransition() {
+            // Activity fillers use the same internal flag to keep the native
+            // indicator visible, but Web's `typing` event represents only a
+            // typing activity (not a status filler).
+            val wasTyping = previousState.isTyping && previousState.activityText == null
+            val isTyping = current.isTyping && current.activityText == null
+            if (wasTyping != isTyping) {
+                artemisUiHandle.emit(ArtemisUiEvent.Typing(isTyping))
+            }
+        }
+        fun emitMessageIfChanged(messageId: String) {
+            val message = current.messages.find { it.messageId == messageId } ?: return
+            val old = previousState.messages.find { it.messageId == messageId }
+            if (old != message) {
+                artemisUiHandle.emit(ArtemisUiEvent.Message(message))
+                artemisUiHandle.emit(ArtemisUiEvent.MessageChanged(message.messageId, message.role.name.lowercase()))
+            }
+        }
+        fun emitChangedMessages() {
+            val changed = current.messages.filter { message ->
+                previousState.messages.find { it.messageId == message.messageId } != message
+            }
+            if (changed.isEmpty()) return
+            var replaced = false
+            changed.forEach { message ->
+                if (previousState.messages.none { it.messageId == message.messageId }) {
+                    artemisUiHandle.emit(ArtemisUiEvent.Message(message))
+                    artemisUiHandle.emit(ArtemisUiEvent.MessageChanged(message.messageId, message.role.name.lowercase()))
+                } else if (!replaced) {
+                    artemisUiHandle.emit(ArtemisUiEvent.MessagesReplaced(current.messages.toList()))
+                    replaced = true
+                }
+            }
+        }
+        when (frame) {
+            is ChatFrame.Session -> {
+                if (previousSession != null && previousSession != current.sessionId) {
+                    artemisUiHandle.emit(ArtemisUiEvent.MessagesReplaced(current.messages.toList()))
+                }
+                artemisUiHandle.emit(ArtemisUiEvent.InitialAssistantMessageStatus(
+                    current.initialAssistantMessageSource,
+                    current.initialAssistantMessageExpected,
+                    current.initialAssistantMessagePending,
+                    current.initialAssistantMessageRendered,
+                    current.initialAssistantMessageFailed,
+                ))
+            }
+            is ChatFrame.Start -> emitTypingTransition()
+            is ChatFrame.Chunk -> artemisUiHandle.emit(ArtemisUiEvent.MessageChunk(frame.id, frame.text))
+            is ChatFrame.End -> {
+                emitMessageIfChanged(frame.message.messageId)
+                emitTypingTransition()
+            }
+            is ChatFrame.UserRender -> {
+                val message = current.messages.find { it.messageId == frame.id }
+                if (message != null && previousState.messages.find { it.messageId == frame.id } != message) {
+                    artemisUiHandle.emit(ArtemisUiEvent.MessagesReplaced(current.messages.toList()))
+                }
+            }
+            is ChatFrame.Typing -> emitTypingTransition()
+            is ChatFrame.Activity -> {
+                when (frame.type) {
+                    "status_update" -> artemisUiHandle.emit(ArtemisUiEvent.StatusUpdate(
+                        text = frame.payload.string("text", "content").orEmpty(),
+                        operation = frame.payload.string("operation") ?: "general",
+                        fillerId = frame.payload.string("fillerId"),
+                        turnId = frame.payload.string("turnId"),
+                    ))
+                    "status_clear" -> artemisUiHandle.emit(ArtemisUiEvent.StatusClear)
+                    else -> Unit
+                }
+                emitChangedMessages()
+            }
+            is ChatFrame.Authorization -> {
+                emitAuthorizationEvent(frame)
+                emitChangedMessages()
+            }
+            is ChatFrame.FeedbackAck -> emitFeedbackAck(frame.payload)
+            is ChatFrame.SurveyAck -> emitSurveyAck(frame.payload)
+            is ChatFrame.SessionEnd -> artemisUiHandle.emit(ArtemisUiEvent.SessionEnded(frame.payload.string("reason")))
+            is ChatFrame.InitialMessage -> artemisUiHandle.emit(ArtemisUiEvent.InitialAssistantMessageStatus(
+                current.initialAssistantMessageSource,
+                current.initialAssistantMessageExpected,
+                current.initialAssistantMessagePending,
+                current.initialAssistantMessageRendered,
+                current.initialAssistantMessageFailed,
+            ))
+            is ChatFrame.Transfer -> {
+                frame.messages.forEach { emitMessageIfChanged(it.messageId) }
+                if (frame.eventType == "agent:typing" || frame.eventType == "agent:typing_stop") emitTypingTransition()
+                val data = frame.payload?.deepCopy()
+                when (frame.eventType) {
+                    "agent:joined" -> artemisUiHandle.emit(ArtemisUiEvent.AgentJoined(frame.sessionId, data, frame.timestamp))
+                    "agent:exited" -> artemisUiHandle.emit(ArtemisUiEvent.AgentExited(frame.sessionId, data, frame.timestamp))
+                    "agent:notice" -> artemisUiHandle.emit(ArtemisUiEvent.AgentNotice(frame.sessionId, data, frame.timestamp))
+                }
+            }
+            is ChatFrame.ContactCenterMedia, is ChatFrame.Cancel -> Unit
+            is ChatFrame.Error -> artemisUiHandle.emit(ArtemisUiEvent.Error(
+                frame.code ?: "RUNTIME", frame.text, true,
+            )).also {
+                if (frame.code?.contains("CONTACT", ignoreCase = true) == true || frame.code?.contains("CALL", ignoreCase = true) == true) {
+                    artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged("error", frame.text))
+                    artemisUiHandle.emit(ArtemisUiEvent.ContactCenterError(frame.text))
+                }
+            }
+        }
+        if (frame !is ChatFrame.Activity && previousState.activityText != null && current.activityText == null) {
+            artemisUiHandle.emit(ArtemisUiEvent.StatusClear)
+        }
+    }
+
+    private fun emitLocalActivityTransitions(previous: ChatUiState, current: ChatUiState) {
+        if (previous.activityText != null && current.activityText == null) {
+            artemisUiHandle.emit(ArtemisUiEvent.StatusClear)
+        }
+        val wasTyping = previous.isTyping && previous.activityText == null
+        val isTyping = current.isTyping && current.activityText == null
+        if (wasTyping != isTyping) {
+            artemisUiHandle.emit(ArtemisUiEvent.Typing(isTyping))
+        }
+    }
+
+    private fun emitAuthorizationEvent(frame: ChatFrame.Authorization) {
+        val payload = frame.payload.deepCopy()
+        when (val event = frame.event) {
+            is AuthorizationEvent.Gate -> artemisUiHandle.emit(ArtemisUiEvent.AuthRequired(
+                event.sessionId,
+                payload.array("pending")?.mapNotNull { value -> value.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() }.orEmpty(),
+                payload.array("satisfied")?.mapNotNull { value -> value.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() }.orEmpty(),
+                payload,
+            ))
+            is AuthorizationEvent.Challenge -> artemisUiHandle.emit(ArtemisUiEvent.AuthChallenge(payload))
+            is AuthorizationEvent.Satisfied -> artemisUiHandle.emit(ArtemisUiEvent.AuthGateSatisfied(event.sessionId, payload))
+            is AuthorizationEvent.Resolved -> artemisUiHandle.emit(ArtemisUiEvent.AuthChallengeResolved(
+                event.sessionId, event.id, payload.string("outcome"), payload,
+            ))
+            is AuthorizationEvent.Queued -> artemisUiHandle.emit(ArtemisUiEvent.MessageQueued(
+                event.sessionId, payload.string("reason") ?: "queued", payload,
+            ))
+        }
+    }
+
+    private fun emitFeedbackAck(payload: JsonObject) {
+        val error = payload.obj("error")
+        artemisUiHandle.emit(ArtemisUiEvent.FeedbackAck(
+            messageId = payload.string("messageId").orEmpty(),
+            success = payload.flag("success"),
+            feedbackId = payload.string("feedbackId"),
+            actionRenderId = payload.string("actionRenderId"),
+            errorCode = error?.string("code"),
+            errorMessage = error?.string("message"),
+            payload = payload.deepCopy(),
+        ))
+    }
+
+    private fun emitSurveyAck(payload: JsonObject) {
+        val error = payload.obj("error")
+        artemisUiHandle.emit(ArtemisUiEvent.AgentTransferSurveyAck(
+            artemisSessionId = payload.string("artemisSessionId").orEmpty(),
+            success = payload.flag("success"),
+            feedbackId = payload.string("feedbackId"),
+            errorCode = error?.string("code"),
+            errorMessage = error?.string("message"),
+            payload = payload.deepCopy(),
+        ))
+    }
+
+    private fun emitContactCenterMediaEvent(event: ContactCenterMediaFrame) {
+        when (event) {
+            is ContactCenterMediaFrame.Incoming -> event.call.let { invite ->
+                artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged("incoming", callId = invite.callId))
+                artemisUiHandle.emit(ArtemisUiEvent.ContactCenterIncomingCall(invite))
+                artemisUiHandle.emit(ArtemisUiEvent.AgentMediaInvite(
+                    callType = invite.callType,
+                    conversationId = invite.conversationId,
+                    providerConversationId = invite.providerConversationId,
+                    providerAccountId = invite.providerAccountId,
+                    mediaSessionId = invite.mediaSessionId,
+                    idempotencyKey = invite.idempotencyKey,
+                    callId = invite.callId,
+                    displayName = invite.displayName,
+                ))
+            }
+            is ContactCenterMediaFrame.EndpointReleased -> {
+                artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged("connecting", callId = event.endpoint.callId))
+                artemisUiHandle.emit(ArtemisUiEvent.AgentMediaEndpointReleased(event.endpoint))
+            }
+            is ContactCenterMediaFrame.SbcDetails -> {
+                val details = event.details
+                if (details.requestId == null || details.requestId == contactCenterSbcRequestId) {
+                    contactCenterSbcDetails = details
+                    artemisUiHandle.emit(ArtemisUiEvent.AgentMediaSbcDetailsChanged(details))
+                    if (details.ready) {
+                        artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged("ready"))
+                        artemisUiHandle.emit(ArtemisUiEvent.ContactCenterReady(details))
+                    } else {
+                        artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged(
+                            "unsupported", "SBC details are unavailable"
+                        ))
+                        artemisUiHandle.emit(ArtemisUiEvent.ContactCenterUnsupported("SBC details are unavailable"))
+                    }
+                }
+            }
+            is ContactCenterMediaFrame.Terminated -> {
+                val reason = event.call.reason
+                val callId = event.call.callId
+                if (callId == null || endedContactCenterCalls.add(callId)) {
+                    artemisUiHandle.emit(ArtemisUiEvent.ContactCenterStateChanged("ended", reason, callId))
+                    artemisUiHandle.emit(ArtemisUiEvent.ContactCenterCallEnded(callId, reason))
+                }
+                artemisUiHandle.emit(ArtemisUiEvent.AgentMediaCallTerminated(event.call))
+            }
         }
     }
 

@@ -101,7 +101,10 @@ class TemplatePreviewActivity : AppCompatActivity() {
             """{"chart":{"title":"Pie shares","type":"pie","data":[{"label":"A","value":2},{"label":"B","value":3},{"label":"C","value":5}]}}""",
             """{"table":{"columns":[{"key":"item","header":"Item","align":"left"},{"key":"amount","header":"Amount","align":"right"}],"max_visible_rows":1,"rows":[{"item":"One","amount":10},{"item":"Two","amount":20},{"item":"Three","amount":30}]}}""",
             """{"markdown":"## Markdown table\n\n| Item | Amount |\n| :--- | ---: |\n| **One** | 10 |\n| Two | 20 |\n\n- [x] Selected task\n- [ ] Pending task\n\n[Reference][guide]\n\n[guide]: https://example.com/guide"}""",
-            """{"adaptive_card":"{\"body\":[{\"type\":\"TextBlock\",\"text\":\"Readable channel preview\"}]}"}"""
+            """{"adaptive_card":"{\"type\":\"AdaptiveCard\",\"version\":\"1.5\",\"body\":[{\"type\":\"TextBlock\",\"text\":\"**Adaptive Card**\",\"wrap\":true},{\"type\":\"Input.Text\",\"id\":\"name\",\"label\":\"Name\",\"isRequired\":true,\"errorMessage\":\"Enter your name\"}],\"actions\":[{\"type\":\"Action.Submit\",\"id\":\"adaptive-preview-submit\",\"title\":\"Submit\"}]}"}""",
+            """{"image":{"url":"https://placehold.co/600x300/png","caption":"Image fixture"}}""",
+            """{"audio":{"url":"https://interactive-examples.mdn.mozilla.net/media/cc0-audio/t-rex-roar.mp3","caption":"Audio fixture"}}""",
+            """{"video":{"url":"https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4","caption":"Video fixture"}}"""
         )
         val previewMessages = mutableListOf(
             ChatMessage("welcome", role = MessageRole.ASSISTANT, text = "Hello! How can I help you today?"),

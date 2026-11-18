@@ -25,6 +25,8 @@ public final class ArtemisSocketConfiguration {
     private final long idleTimeoutMs;
     private final boolean endSessionOnIdle;
     private final long staleSessionRefreshMs;
+    private final int historyPageSize;
+    private final int maxHistoryPages;
 
     public interface BootstrapTokenProvider { String getToken() throws Exception; }
 
@@ -49,6 +51,8 @@ public final class ArtemisSocketConfiguration {
         idleTimeoutMs = builder.idleTimeoutMs;
         endSessionOnIdle = builder.endSessionOnIdle;
         staleSessionRefreshMs = builder.staleSessionRefreshMs;
+        historyPageSize = builder.historyPageSize;
+        maxHistoryPages = builder.maxHistoryPages;
     }
 
     public String getEndpoint() {
@@ -98,6 +102,8 @@ public final class ArtemisSocketConfiguration {
     public long getIdleTimeoutMs() { return idleTimeoutMs; }
     public boolean isEndSessionOnIdle() { return endSessionOnIdle; }
     public long getStaleSessionRefreshMs() { return staleSessionRefreshMs; }
+    public int getHistoryPageSize() { return historyPageSize; }
+    public int getMaxHistoryPages() { return maxHistoryPages; }
     private static JsonObject copy(JsonObject value) { return value == null ? null : value.deepCopy(); }
 
     public static Builder builder() {
@@ -125,6 +131,8 @@ public final class ArtemisSocketConfiguration {
         private long idleTimeoutMs;
         private boolean endSessionOnIdle;
         private long staleSessionRefreshMs;
+        private int historyPageSize = 100;
+        private int maxHistoryPages = 20;
 
         public Builder bootstrapToken(String value) { bootstrapToken = value; return this; }
         public Builder bootstrapTokenProvider(BootstrapTokenProvider value) { bootstrapTokenProvider = value; return this; }
@@ -139,6 +147,8 @@ public final class ArtemisSocketConfiguration {
             idleTimeoutMs = timeoutMs; endSessionOnIdle = endSession; return this;
         }
         public Builder staleSessionRefresh(long timeoutMs) { staleSessionRefreshMs = timeoutMs; return this; }
+        /** Bound history retrieval. Existing clients default to 100 rows and 20 pages. */
+        public Builder historyPagination(int pageSize, int maxPages) { historyPageSize = pageSize; maxHistoryPages = maxPages; return this; }
 
         public Builder endpoint(String endpoint) {
             this.endpoint = endpoint;
@@ -192,6 +202,7 @@ public final class ArtemisSocketConfiguration {
                 throw new IllegalArgumentException("endpoint must be an absolute HTTP(S) or WS(S) URL without credentials, query or fragment");
             }
             if (idleTimeoutMs < 0 || staleSessionRefreshMs < 0) throw new IllegalArgumentException("Timeouts must be non-negative");
+            if (historyPageSize < 1 || historyPageSize > 200 || maxHistoryPages < 1 || maxHistoryPages > 1000) throw new IllegalArgumentException("Invalid history pagination");
             if (maxReconnectAttempts < 0 || reconnectBaseDelayMs < 0 || reconnectMaxDelayMs < reconnectBaseDelayMs) {
                 throw new IllegalArgumentException("Invalid reconnection configuration");
             }

@@ -22,9 +22,9 @@ import com.google.gson.JsonObject
 /** App-owned template replacements selected by richContent template type. */
 internal object CustomTemplateInjection {
     fun register(handle: ArtemisUiHandle) {
-        handle.registerTemplateRenderer("carousel", ArtemisTemplateRenderer(::renderCarousel))
-        handle.registerTemplateRenderer("list", ArtemisTemplateRenderer(::renderList))
-        handle.registerTemplateRenderer("table", ArtemisTemplateRenderer(::renderTable))
+//        handle.registerTemplateRenderer("carousel", ArtemisTemplateRenderer(::renderCarousel))
+//        handle.registerTemplateRenderer("list", ArtemisTemplateRenderer(::renderList))
+//        handle.registerTemplateRenderer("table", ArtemisTemplateRenderer(::renderTable))
     }
 
     private fun renderCarousel(request: ArtemisTemplateRequest): View? {

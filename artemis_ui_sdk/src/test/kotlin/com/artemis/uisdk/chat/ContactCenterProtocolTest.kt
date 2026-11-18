@@ -113,6 +113,19 @@ class ContactCenterProtocolTest {
         val history = ChatFrameParser.history("""[{"id":"close","role":"assistant","content":"Ended","metadata":{"custom":{"source":"agent-transfer","eventType":"agent:disconnected","providerEventData":{"survey":{"triggerSurvey":true,"surveyType":"csat","artemisSessionId":"t"}}}}}]""")
         t.mergeHistory(history); assertEquals(SurveySubmissionStatus.SUBMITTED, t.state.messages.single { it.transferSurvey != null }.transferSurvey!!.status)
     }
+
+    @Test fun contactCenterPhaseOneCallLifecycleFramesRemainDistinctFromDeferredMediaFeatures() {
+        val invite = ChatFrameParser.parse("""{"type":"agent_media","event":{"type":"agent:media","data":{"providerEventType":"call_agent_webrtc","mediaKind":"webrtc_call","action":"invite","callType":"audio","conversationId":"c","mediaSessionId":"m","idempotencyKey":"i"}}}""")
+        assertTrue(invite is ChatFrame.ContactCenterMedia)
+        assertTrue((invite as ChatFrame.ContactCenterMedia).event is ContactCenterMediaFrame.Incoming)
+        val accepted = ChatFrameParser.parse("""{"type":"agent_media","event":{"type":"agent:media","data":{"providerEventType":"call_agent_webrtc_accepted","mediaKind":"webrtc_call","action":"accepted","callType":"audio","callId":"c","mediaSessionId":"m","endpoint":{"sipURI":"sip:test@example.com","addresses":["sbc.example.com"]},"customer":{"sipUser":"user","sipPassword":"secret"}}}}""")
+        assertTrue(accepted is ChatFrame.ContactCenterMedia)
+        assertTrue((accepted as ChatFrame.ContactCenterMedia).event is ContactCenterMediaFrame.EndpointReleased)
+        val ended = ChatFrameParser.parse("""{"type":"agent_media","event":{"type":"agent:media","data":{"providerEventType":"call_agent_webrtc_terminated","mediaKind":"webrtc_call","action":"terminated","callId":"c","reason":"remote_ended"}}}""")
+        assertTrue(ended is ChatFrame.ContactCenterMedia)
+        assertTrue((ended as ChatFrame.ContactCenterMedia).event is ContactCenterMediaFrame.Terminated)
+        assertNull(ChatFrameParser.parse("""{"type":"agent_media","event":{"type":"agent:media","data":{"providerEventType":"webrtc_screenshare","mediaKind":"screen_share","action":"invite"}}}"""))
+    }
     @Test fun failedTransferAttachmentsRemainVisibleAndDisabledByDeliveryMetadata() {
         val messages = ChatFrameParser.history("""[{"id":"u","role":"user","content":"Files","metadata":{"attachmentIds":["sent","failed"],"attachmentFilenames":["a.pdf","b.pdf"],"attachmentSizeBytes":[1,2],"agentTransferAttachmentFailedIds":["failed"],"agentTransferAttachmentDeliveryStatus":"partial"}}]""")
         assertFalse(messages.single().attachments[0].deliveryFailed); assertTrue(messages.single().attachments[1].deliveryFailed)

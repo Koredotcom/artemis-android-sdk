@@ -23,25 +23,41 @@ internal class TemplateViewCache {
     data class Entry(val message: ChatMessage, val views: List<View>, val nodeCount: Int)
     private val cache = object : LruCache<String, Entry>(1000) {
         override fun sizeOf(key: String, value: Entry) = value.nodeCount
+        override fun entryRemoved(evicted: Boolean, key: String, oldValue: Entry, newValue: Entry?) {
+            if (evicted || newValue != null) oldValue.views.forEach(::releaseAdaptiveViews)
+        }
     }
     fun retain(message: ChatMessage, views: List<View>) {
-        if (!message.hasTemplatePresentation() || views.isEmpty() || hasMedia(message)) return
+        if (!message.hasTemplatePresentation() || views.isEmpty() || hasMedia(message)) { views.forEach(::releaseAdaptiveViews); return }
         val nodes = views.sumOf(::countNodes)
-        if (nodes > 1000) return
+        if (nodes > 1000) { views.forEach(::releaseAdaptiveViews); return }
         cache.put(message.messageId, Entry(message, views, nodes))
         // Bound both view count and retained message models/closures.
-        while (cache.snapshot().size > 12) cache.remove(cache.snapshot().keys.first())
+        while (cache.snapshot().size > 12) discard(cache.snapshot().keys.first())
     }
     fun take(message: ChatMessage): List<View>? {
         val entry = cache.remove(message.messageId) ?: return null
-        return entry.views.takeIf { sameTemplatePresentation(entry.message, message) }
+        if (sameTemplatePresentation(entry.message, message)) return entry.views
+        entry.views.forEach(::releaseAdaptiveViews)
+        return null
     }
-    fun prune(ids: Set<String>) { cache.snapshot().keys.filterNot(ids::contains).forEach(cache::remove) }
+    fun prune(ids: Set<String>) { cache.snapshot().keys.filterNot(ids::contains).forEach(::discard) }
     fun clear() = cache.evictAll()
+    private fun discard(key: String) { cache.remove(key)?.views?.forEach(::releaseAdaptiveViews) }
     internal fun retainedNodeCount() = cache.size()
     private fun countNodes(view: View): Int = 1 + if (view is ViewGroup) (0 until view.childCount).sumOf { countNodes(view.getChildAt(it)) } else 0
     private fun hasMedia(message: ChatMessage): Boolean = message.richContent?.let { it.has("audio") || it.has("video") } == true ||
         message.renderables?.any { it.isJsonObject && it.asJsonObject.string("name") in setOf("audio", "video") } == true
+}
+
+internal fun releaseAdaptiveViews(view: View) {
+    if (view is AdaptiveCardView) {
+        view.stopLoading()
+        view.removeJavascriptInterface("ArtemisAdaptive")
+        view.destroy()
+    } else if (view is ViewGroup) {
+        (0 until view.childCount).forEach { releaseAdaptiveViews(view.getChildAt(it)) }
+    }
 }
 
 /** Follow new content only when the user is at the bottom and no scroll gesture is active. */

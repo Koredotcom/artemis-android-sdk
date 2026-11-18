@@ -6,6 +6,8 @@ This guide describes the SDK's presentation options and host extension APIs. Run
 
 Existing integrations require no new configuration. Attachment upload visibility still requires all three: the host attachment feature, branding `theme.attachmentButtonEnabled`, and `attachment:write`. The five-file limit and 40dp composer buttons/input minimum height remain in effect.
 
+History retrieval can be bounded with `history = ArtemisHistoryConfig(pageSize = 100, maxPages = 20)` on `ArtemisUIConfig`, or YAML `chat.history_page_size` and `chat.max_history_pages`. `handle.clearHistory()` clears only the local transcript and invalidates any outstanding history response; it does not delete server history. The handle's `updateCustomData`, `getCustomData`, and `clearCustomData` manage session-scoped values attached to subsequent user messages. Explicitly ending the session clears those values.
+
 | Host customization | API |
 | --- | --- |
 | Chat header and composer | `ChatOptions.headerBuilder` and `footerBuilder` |

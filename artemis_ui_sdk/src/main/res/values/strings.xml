@@ -34,4 +34,10 @@
     <string name="artemis_hide_attachments">Hide %1$s</string>
     <string name="artemis_attachment_group_failed">%1$s · Some files not sent to the agent</string>
     <string name="artemis_attachment_type_status">%1$s · %2$s</string>
+    <string name="artemis_incoming_audio_call_title">Incoming audio call</string>
+    <string name="artemis_incoming_video_call_title">Incoming video call</string>
+    <string name="artemis_incoming_call_message">Your support agent is calling.</string>
+    <string name="artemis_accept_call">Accept</string>
+    <string name="artemis_reject_call">Reject</string>
+    <string name="artemis_call_response_failed">The call response could not be sent. Please try again.</string>
 </resources>

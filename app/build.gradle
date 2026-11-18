@@ -36,6 +36,11 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = '17' }
+
+    lint {
+        // Lifecycle 2.9's detector is incompatible with AGP 8.7's Kotlin analysis API.
+        disable 'NullSafeMutableLiveData'
+    }
 }
 
 dependencies {

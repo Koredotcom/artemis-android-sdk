@@ -1,6 +1,7 @@
 package com.artemis.uisdk.chat
 
 import android.graphics.Color
+import android.app.AlertDialog
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -16,6 +17,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import androidx.core.view.WindowInsetsControllerCompat
 import com.artemis.uisdk.ArtemisUI
 import com.artemis.uisdk.ArtemisUiEvent
 import com.artemis.uisdk.ArtemisUiHandle
@@ -52,8 +54,22 @@ class ArtemisChatFragment : Fragment() {
     private val filePicker = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty() && ::artemisChatViewModel.isInitialized) artemisChatViewModel.uploadAttachments(uris)
     }
+    private val contactCenterCallLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val endpoint = activeMediaEndpoint
+        val remoteEnded = result.resultCode == ArtemisContactCenterCallActivity.RESULT_REMOTE_TERMINATED ||
+            result.data?.getStringExtra(ArtemisContactCenterCallActivity.EXTRA_END_REASON) == "remote_ended"
+        if (endpoint != null && !remoteEnded && ::artemisChatViewModel.isInitialized) {
+            val reason = result.data?.getStringExtra(ArtemisContactCenterCallActivity.EXTRA_END_REASON)
+                ?.takeIf(String::isNotBlank) ?: "user_ended"
+            artemisChatViewModel.terminateAgentMediaCall(endpoint, reason)
+        }
+        activeMediaEndpoint = null
+        acceptedMediaCallId = null
+        pendingMediaInvite = null
+    }
     private lateinit var sendMessageButton: android.widget.ImageButton
-    private lateinit var emptyStateView: View
     private lateinit var retryConnectionButton: Button
     private lateinit var chatMessageAdapter: ChatMessageAdapter
     private var isConfigurationUnavailable = false
@@ -67,6 +83,12 @@ class ArtemisChatFragment : Fragment() {
     private var customHeaderView: View? = null
     private var customHeaderTitle: String? = null
     private val customFooterEnabled = MutableStateFlow(false)
+    private var incomingCallDialog: AlertDialog? = null
+    private var displayedMediaInviteKey: String? = null
+    private val handledMediaInviteKeys = linkedSetOf<String>()
+    private var pendingMediaInvite: ArtemisUiEvent.AgentMediaInvite? = null
+    private var acceptedMediaCallId: String? = null
+    private var activeMediaEndpoint: AgentMediaEndpoint? = null
     private val chatTitle: String get() = arguments?.getString(ARG_CHAT_TITLE) ?: "Chat"
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -107,10 +129,14 @@ class ArtemisChatFragment : Fragment() {
         }
         val primaryColor = color(artemisUiHandle.config.theme.primary, Color.rgb(37, 99, 235))
         val chatRootView = inflater.inflate(R.layout.artemis_fragment_chat, container, false)
+        chatRootView.visibility = View.INVISIBLE
+        chatRootView.findViewById<View>(R.id.artemis_empty).visibility = View.GONE
+        // Keep system chrome neutral while the themed chat surface is blank.
+        updateStatusBarColor(Color.WHITE)
         artemisUiHandle.config.theme.background?.let { chatRootView.setBackgroundColor(color(it, Color.WHITE)) }
         defaultHeaderView = chatRootView.findViewById(R.id.artemis_header)
         defaultFooterView = chatRootView.findViewById(R.id.artemis_composer)
-        chatRootView.findViewById<View>(R.id.artemis_header).setBackgroundColor(primaryColor)
+        chatRootView.findViewById<View>(R.id.artemis_header).setBackgroundColor(Color.WHITE)
         chatRootView.findViewById<TextView>(R.id.artemis_title).text = chatTitle
         chatRootView.findViewById<TextView>(R.id.artemis_avatar).text =
             chatTitle.trim().take(1).uppercase().ifBlank { "A" }
@@ -121,7 +147,6 @@ class ArtemisChatFragment : Fragment() {
         }
         chatRootView.findViewById<View>(R.id.artemis_close).setOnClickListener { closeChat("CLOSE") }
         connectionStatusTextView = chatRootView.findViewById(R.id.artemis_status)
-        emptyStateView = chatRootView.findViewById(R.id.artemis_empty)
         typingIndicatorTextView = chatRootView.findViewById(R.id.artemis_typing)
         retryConnectionButton = chatRootView.findViewById<Button>(R.id.artemis_retry).apply {
             setOnClickListener { artemisChatViewModel.retry() }
@@ -259,23 +284,51 @@ class ArtemisChatFragment : Fragment() {
 
     override fun onStart() {
         super.onStart()
-        if (::artemisChatViewModel.isInitialized) artemisChatViewModel.start()
+        if (::artemisChatViewModel.isInitialized) {
+            artemisChatViewModel.start()
+            pendingMediaInvite?.takeIf { acceptedMediaCallId == null }?.let(::showIncomingMediaInvite)
+        }
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         if (isConfigurationUnavailable) return
         artemisUiHandleListenerRegistration = artemisUiHandle.addListener { event ->
-            if (event is ArtemisUiEvent.Closed && event.reason in setOf("HANDLE_CLOSED", "END_SESSION")) {
-                activity?.runOnUiThread {
-                    if (!isAdded) return@runOnUiThread
-                    dismissChat()
+            activity?.runOnUiThread {
+                if (!isAdded) return@runOnUiThread
+                when (event) {
+                    is ArtemisUiEvent.AgentMediaInvite -> {
+                        pendingMediaInvite = event
+                        showIncomingMediaInvite(event)
+                    }
+                    is ArtemisUiEvent.AgentMediaEndpointReleased -> launchContactCenterCall(event.endpoint)
+                    is ArtemisUiEvent.AgentMediaCallTerminated -> {
+                        val callId = event.call.callId
+                        if (callId == null || callId == activeMediaEndpoint?.callId || callId == pendingMediaInvite?.callId) {
+                            incomingCallDialog?.dismiss()
+                            incomingCallDialog = null
+                            ArtemisContactCenterCallActivity.finishActiveAsRemote()
+                            if (activeMediaEndpoint == null) {
+                                pendingMediaInvite = null
+                                acceptedMediaCallId = null
+                            }
+                        }
+                    }
+                    is ArtemisUiEvent.Closed -> if (event.reason in setOf("HANDLE_CLOSED", "END_SESSION")) dismissChat()
+                    else -> Unit
                 }
             }
         }
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                combine(artemisChatViewModel.state, artemisUiHandle.presentation) { state, presentation -> state to presentation }.collect { (chatUiState, presentation) ->
+                combine(artemisChatViewModel.state, artemisUiHandle.presentation, artemisChatViewModel.initializationComplete) { state, presentation, initialized ->
+                    Triple(state, presentation, initialized)
+                }.collect { (chatUiState, presentation, initialized) ->
                     applyPresentation(view, presentation)
+                    if (initialized) {
+                        val theme = presentation.branding.theme
+                        updateStatusBarColor(color(theme.headerBackground ?: theme.primary, requireContext().getColor(R.color.artemis_primary)))
+                    }
+                    view.visibility = if (initialized) View.VISIBLE else View.INVISIBLE
                     connectionStatusTextView.text = when {
                         chatUiState.isOffline -> label(R.string.artemis_offline)
                         chatUiState.connectionStatus == ConnectionStatus.CONNECTED -> when (chatUiState.agentTransferStatus) {
@@ -303,7 +356,6 @@ class ArtemisChatFragment : Fragment() {
                     errorView.text = chatUiState.errorMessage.orEmpty()
                     errorView.visibility = if (chatUiState.errorMessage.isNullOrBlank()) View.GONE else View.VISIBLE
                     updateSendState()
-                    emptyStateView.visibility = if (chatUiState.messages.isEmpty()) View.VISIBLE else View.GONE
                     // Connection/status changes must not submit the same list or snap the user's scroll position.
                     if (submittedMessages != chatUiState.messages) {
                         submittedMessages = chatUiState.messages
@@ -321,6 +373,77 @@ class ArtemisChatFragment : Fragment() {
     }
 
     private fun label(id: Int, vararg args: Any) = artemisUiHandle.presentation.value.strings.text(requireContext(), id, *args)
+
+    private fun showIncomingMediaInvite(event: ArtemisUiEvent.AgentMediaInvite) {
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+        val inviteKey = event.idempotencyKey ?: event.mediaSessionId ?: listOf(
+            event.conversationId,
+            event.providerConversationId,
+            event.callType,
+        ).joinToString("|")
+        if (inviteKey in handledMediaInviteKeys || displayedMediaInviteKey == inviteKey && incomingCallDialog?.isShowing == true) return
+        displayedMediaInviteKey = inviteKey
+        incomingCallDialog?.dismiss()
+        val titleId = if (event.callType == "video") R.string.artemis_incoming_video_call_title
+        else R.string.artemis_incoming_audio_call_title
+        val dialog = AlertDialog.Builder(requireContext())
+            .setTitle(label(titleId))
+            .setMessage(label(R.string.artemis_incoming_call_message))
+            .setNegativeButton(label(R.string.artemis_reject_call)) { _, _ ->
+                if (artemisChatViewModel.respondToAgentMediaInvite(event.toAgentMediaInvite(), accepted = false)) {
+                    handledMediaInviteKeys.add(inviteKey)
+                    pendingMediaInvite = null
+                }
+            }
+            .setPositiveButton(label(R.string.artemis_accept_call)) { _, _ ->
+                if (artemisChatViewModel.respondToAgentMediaInvite(event.toAgentMediaInvite(), accepted = true)) {
+                    handledMediaInviteKeys.add(inviteKey)
+                    acceptedMediaCallId = event.callId ?: event.mediaSessionId ?: event.conversationId
+                    pendingMediaInvite = event
+                }
+            }
+            .create()
+        incomingCallDialog = dialog
+        dialog.setCanceledOnTouchOutside(false)
+        dialog.setCancelable(false)
+        dialog.setOnDismissListener {
+            if (incomingCallDialog === dialog) incomingCallDialog = null
+        }
+        dialog.show()
+    }
+
+    private fun ArtemisUiEvent.AgentMediaInvite.toAgentMediaInvite() = AgentMediaInvite(
+        callType = callType,
+        conversationId = conversationId,
+        providerConversationId = providerConversationId,
+        providerAccountId = providerAccountId,
+        mediaSessionId = mediaSessionId,
+        idempotencyKey = idempotencyKey,
+        callId = callId,
+        displayName = displayName,
+    )
+
+    private fun launchContactCenterCall(endpoint: AgentMediaEndpoint) {
+        if (!::artemisChatViewModel.isInitialized || acceptedMediaCallId != endpoint.callId || activeMediaEndpoint != null) return
+        if (!isAdded || activity == null) return
+        activeMediaEndpoint = endpoint
+        incomingCallDialog?.dismiss()
+        val intent = ArtemisContactCenterCallActivity.intent(
+            requireContext(),
+            endpoint,
+            artemisChatViewModel.currentContactCenterSbcDetails(),
+            artemisUiHandle.config.connection.endpoint,
+            artemisUiHandle.config.contactCenter,
+            artemisUiHandle.handleIdentifier,
+        )
+        runCatching { contactCenterCallLauncher.launch(intent) }
+            .onFailure {
+                activeMediaEndpoint = null
+                acceptedMediaCallId = null
+                artemisChatViewModel.terminateAgentMediaCall(endpoint, "call_ui_unavailable")
+                artemisChatViewModel.contactCenterError(label(R.string.artemis_call_response_failed))
+            }
+    }
 
     private fun applyPresentation(root: View, value: ArtemisPresentation) {
         if (appliedPresentation == value) return
@@ -365,7 +488,7 @@ class ArtemisChatFragment : Fragment() {
         messageInputEditText.setTextColor(color(theme.composerText ?: theme.text, requireContext().getColor(R.color.artemis_text)))
         messageInputEditText.setHintTextColor(color(theme.composerPlaceholder ?: theme.mutedText, requireContext().getColor(R.color.artemis_muted)))
         messageInputEditText.hint = value.branding.placeholderText ?: label(R.string.artemis_hint)
-        sendMessageButton.backgroundTintList = android.content.res.ColorStateList.valueOf(primary)
+        sendMessageButton.backgroundTintList = android.content.res.ColorStateList.valueOf(color(theme.userBubble, primary))
         sendMessageButton.imageTintList = android.content.res.ColorStateList.valueOf(foreground)
         sendMessageButton.contentDescription = label(R.string.artemis_send)
         attachButton.imageTintList = android.content.res.ColorStateList.valueOf(color(theme.composerText ?: theme.text, requireContext().getColor(R.color.artemis_text)))
@@ -393,14 +516,14 @@ class ArtemisChatFragment : Fragment() {
         val state = artemisChatViewModel.state.value
         val hasAttachments = state.attachmentDrafts.isNotEmpty()
         sendMessageButton.isEnabled = messageInputEditText.isEnabled && !state.attachmentUploading && !state.attachmentUploadFailed &&
-            (!hasAttachments || artemisChatViewModel.attachmentsEnabled) && (!messageInputEditText.text.isNullOrBlank() || hasAttachments)
+            (!hasAttachments || artemisChatViewModel.attachmentsEnabled) && !messageInputEditText.text.isNullOrBlank()
         sendMessageButton.background.mutate().alpha = if (sendMessageButton.isEnabled) 255 else 128
     }
 
     private fun sendCurrentMessage() {
-        if (!messageInputEditText.isEnabled) return
+        if (!sendMessageButton.isEnabled) return
         val messageText = messageInputEditText.text?.toString().orEmpty()
-        if (messageText.isBlank() && artemisChatViewModel.state.value.attachmentDrafts.isEmpty()) return
+        if (messageText.isBlank()) return
         scrollFollow.userSentMessage()
         if (artemisChatViewModel.sendComposedMessage(messageText)) messageInputEditText.text?.clear()
     }
@@ -454,6 +577,17 @@ class ArtemisChatFragment : Fragment() {
     override fun onDestroyView() {
         artemisUiHandleListenerRegistration?.close()
         artemisUiHandleListenerRegistration = null
+        incomingCallDialog?.dismiss()
+        incomingCallDialog = null
+        handledMediaInviteKeys.clear()
+        displayedMediaInviteKey = null
+        activeMediaEndpoint?.let { endpoint ->
+            artemisChatViewModel.terminateAgentMediaCall(endpoint, "user_ended")
+            ArtemisContactCenterCallActivity.finishActiveAsRemote()
+        }
+        pendingMediaInvite = null
+        acceptedMediaCallId = null
+        activeMediaEndpoint = null
         if (::chatMessagesRecyclerView.isInitialized) chatMessagesRecyclerView.adapter = null
         submittedMessages = null
         appliedPresentation = null
@@ -462,6 +596,14 @@ class ArtemisChatFragment : Fragment() {
 
     private fun convertDpToPixels(densityIndependentPixels: Int) =
         (densityIndependentPixels * resources.displayMetrics.density).toInt()
+
+    private fun updateStatusBarColor(color: Int) {
+        activity?.window?.let { window ->
+            window.statusBarColor = color
+            WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars =
+                androidx.core.graphics.ColorUtils.calculateLuminance(color) > 0.5
+        }
+    }
 
     private fun color(colorValue: String?, fallbackColor: Int) =
         runCatching { Color.parseColor(colorValue) }.getOrDefault(fallbackColor)
