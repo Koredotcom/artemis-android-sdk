@@ -52,6 +52,8 @@ internal sealed interface ContactCenterMediaFrame {
     data class EndpointReleased(val endpoint: AgentMediaEndpoint) : ContactCenterMediaFrame
     data class Terminated(val call: AgentMediaCallTerminated) : ContactCenterMediaFrame
     data class SbcDetails(val details: AgentMediaSbcDetails) : ContactCenterMediaFrame
+    /** A screen-share or cobrowse invite. Android cannot serve either, so the SDK declines it (Web parity). */
+    data class UnsupportedInvite(val kind: String, val conversationId: String?, val mediaSessionId: String?) : ContactCenterMediaFrame
 }
 enum class SurveySubmissionStatus { READY, PENDING, SUBMITTED, FAILED }
 data class AttachmentRef(
@@ -296,6 +298,7 @@ internal object ContactCenterContracts {
                 "agent:waiting_message",
                 "agent:connected",
                 "agent:disconnected",
+                "agent:transferred",
                 "agent:joined",
                 "agent:exited",
                 "agent:notice",
@@ -411,31 +414,24 @@ internal object ContactCenterContracts {
                 )
             }
 
-            "agent:queued", "agent:waiting_message" -> listOf(
-                content(
-                    text(
-                        "message",
-                        "text",
-                        "body"
-                    ).ifBlank { "Waiting for a human agent…" }, MessageRole.SYSTEM
-                )
+            // Web SDK wording (ChatClient / agent-transfer-notice): a queued frame always shows the
+            // SDK text; only a waiting message carries provider text.
+            "agent:queued" -> listOf(content(AGENT_TRANSFER_QUEUED_MESSAGE, MessageRole.SYSTEM))
+            "agent:waiting_message" -> listOf(
+                content(text("message", "text", "body").ifBlank { AGENT_TRANSFER_QUEUED_MESSAGE }, MessageRole.SYSTEM)
             )
 
-            "agent:connected" -> listOf(content("Connected to a human agent.", MessageRole.SYSTEM))
+            "agent:connected" -> listOf(
+                content(text("noticeText").ifBlank { AGENT_TRANSFER_CONNECTED_MESSAGE }, MessageRole.SYSTEM)
+            )
             "agent:joined", "agent:exited", "agent:notice" -> {
-                val notice = text("noticeText", "message", "text", "body")
+                val notice = text("noticeText")
                 if (notice.isBlank()) emptyList() else listOf(content(notice, MessageRole.SYSTEM))
             }
             "agent:disconnected" -> buildList {
                 text("closeMessage", "message", "text", "body").takeIf(String::isNotBlank)
                     ?.let { add(content(it, suffix = ":close")) }
-                add(
-                    content(
-                        "The human agent has left the conversation.",
-                        MessageRole.SYSTEM,
-                        ":status"
-                    )
-                )
+                disconnectStatus(data)?.let { add(content(it, MessageRole.SYSTEM, ":status")) }
                 survey(data.obj("survey"), wire = true)?.let { survey ->
                     add(
                         content(survey.prompt).copy(
@@ -451,6 +447,21 @@ internal object ContactCenterContracts {
         }
         return ChatFrame.Transfer(session, type, messages, timestamp, mediaFrame, data.deepCopy())
     }
+
+    /** Web SDK `resolveAgentTransferDisconnectStatus`: the status line after the agent leg ends. */
+    internal fun disconnectStatus(data: JsonObject): String? {
+        val reason = data.string("disconnectReason")
+        if (data.flag("suppressDisconnectNotice") || reason == "transfer_to_email") return null
+        return if (reason in AGENT_TRANSFER_HAND_BACK_REASONS) AGENT_TRANSFER_HAND_BACK_MESSAGE else AGENT_TRANSFER_DISCONNECT_MESSAGE
+    }
+
+    // Same text as the Web SDK so both clients read identically.
+    internal const val AGENT_TRANSFER_QUEUED_MESSAGE = "Waiting for a human agent."
+    internal const val AGENT_TRANSFER_CONNECTED_MESSAGE = "Connected to a human agent."
+    internal const val AGENT_TRANSFER_DISCONNECT_MESSAGE = "Human agent has disconnected. You are now back with the AI assistant."
+    internal const val AGENT_TRANSFER_HAND_BACK_MESSAGE = "No agent is available right now. You are back with the AI assistant."
+    /** Disconnect reasons where no agent ever joined: the customer is told they are back with the bot. */
+    private val AGENT_TRANSFER_HAND_BACK_REASONS = setOf("wait_timeout", "long_wait", "no_agents")
 
     fun directMedia(p: JsonObject): ChatFrame.ContactCenterMedia? {
         val type = p.string("type")
@@ -503,9 +514,19 @@ internal object ContactCenterContracts {
         val providerType = data.string("providerEventType")
         val action = data.string("action")
         val mediaKind = data.string("mediaKind")
-        if (mediaKind in setOf("screen_share", "cobrowse") ||
-            providerType?.startsWith("webrtc_screenshare") == true ||
-            providerType?.contains("cobrowse") == true) return null
+        // Match the Web classifier: only an invite is answered; end/terminal frames are ignored.
+        val isScreenShare = providerType == "webrtc_screenshare" || mediaKind == "screen_share"
+        val isCobrowse = mediaKind == "cobrowse" || providerType?.contains("cobrowse") == true
+        if (isScreenShare || isCobrowse) {
+            val invited = action == "invite" || (action == null && providerType == "webrtc_screenshare")
+            if (!invited) return null
+            return ContactCenterMediaFrame.UnsupportedInvite(
+                kind = if (isCobrowse) "cobrowse" else "screen_share",
+                conversationId = data.string("conversationId"),
+                mediaSessionId = data.string("mediaSessionId") ?: callId(data),
+            )
+        }
+        if (providerType?.startsWith("webrtc_screenshare") == true) return null
 
         if (providerType == "call_agent_webrtc" && action == "invite") {
             val call = call(data) ?: return null

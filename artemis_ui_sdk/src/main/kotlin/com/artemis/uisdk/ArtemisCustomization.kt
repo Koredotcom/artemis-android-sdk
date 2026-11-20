@@ -88,9 +88,45 @@ internal data class ArtemisPresentation(
     val branding: ArtemisBranding,
     val strings: ArtemisStrings,
     val typography: ArtemisTypographyConfig = ArtemisTypographyConfig(),
+    val timestampSettings: ArtemisMessageTimestampSettings = ArtemisMessageTimestampSettings(),
     val rendererRevision: Int = 0,
     val logoResolver: ArtemisLogoResolver? = null,
 )
+
+internal enum class ArtemisTimestampPosition { ABOVE, BELOW }
+
+internal enum class ArtemisTimestampTimeFormat { LOCALE, TWELVE_HOUR, TWENTY_FOUR_HOUR }
+
+internal enum class ArtemisTimestampDateFormat { LOCALE, MONTH_DAY_YEAR, DAY_MONTH_YEAR, NAMED_MONTH_DAY_YEAR }
+
+internal data class ArtemisMessageTimestampSettings(
+    val position: ArtemisTimestampPosition = ArtemisTimestampPosition.BELOW,
+    val timeFormat: ArtemisTimestampTimeFormat = ArtemisTimestampTimeFormat.LOCALE,
+    val dateFormat: ArtemisTimestampDateFormat = ArtemisTimestampDateFormat.LOCALE,
+)
+
+internal fun resolveMessageTimestampSettings(widget: JsonObject?): ArtemisMessageTimestampSettings {
+    val theme = widget?.get("theme")?.takeIf { it.isJsonObject }?.asJsonObject ?: return ArtemisMessageTimestampSettings()
+    fun string(key: String) = theme.get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
+        ?.asString?.trim()?.lowercase(Locale.ROOT)
+    return ArtemisMessageTimestampSettings(
+        position = when (string("messageTimestampPosition")) {
+            "above" -> ArtemisTimestampPosition.ABOVE
+            else -> ArtemisTimestampPosition.BELOW
+        },
+        timeFormat = when (string("messageTimestampTimeFormat")) {
+            "12h" -> ArtemisTimestampTimeFormat.TWELVE_HOUR
+            "24h" -> ArtemisTimestampTimeFormat.TWENTY_FOUR_HOUR
+            else -> ArtemisTimestampTimeFormat.LOCALE
+        },
+        dateFormat = when (string("messageTimestampDateFormat")) {
+            "mm-dd-yy" -> ArtemisTimestampDateFormat.MONTH_DAY_YEAR
+            "dd-mm-yy" -> ArtemisTimestampDateFormat.DAY_MONTH_YEAR
+            "mmm-dd-yyyy" -> ArtemisTimestampDateFormat.NAMED_MONTH_DAY_YEAR
+            else -> ArtemisTimestampDateFormat.LOCALE
+        },
+    )
+}
 
 internal fun resolveBranding(host: ArtemisThemeConfig, widget: JsonObject?, hostWelcomeMessage: String? = null): ArtemisBranding {
     val theme = widget?.get("theme")?.takeIf { it.isJsonObject }?.asJsonObject

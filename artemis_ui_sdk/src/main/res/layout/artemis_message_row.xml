@@ -17,6 +17,9 @@
         <TextView android:id="@+id/artemis_answered_by_ai_text" android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:layout_marginStart="4dp" android:textSize="11sp" android:textColor="@color/artemis_muted" />
     </LinearLayout>
+    <TextView android:id="@+id/artemis_message_source" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:textSize="12sp" android:textColor="@color/artemis_muted" android:layout_marginTop="2dp"
+        android:paddingStart="4dp" android:paddingEnd="4dp" android:visibility="gone" />
     <TextView android:id="@+id/artemis_timestamp" android:layout_width="wrap_content" android:layout_height="wrap_content"
         android:textSize="11sp" android:textColor="@color/artemis_muted" android:layout_marginTop="4dp"
         android:paddingStart="4dp" android:paddingEnd="4dp" />

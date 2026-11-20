@@ -8,6 +8,8 @@ Existing integrations require no new configuration. Attachment upload visibility
 
 History retrieval can be bounded with `history = ArtemisHistoryConfig(pageSize = 100, maxPages = 20)` on `ArtemisUIConfig`, or YAML `chat.history_page_size` and `chat.max_history_pages`. `handle.clearHistory()` clears only the local transcript and invalidates any outstanding history response; it does not delete server history. The handle's `updateCustomData`, `getCustomData`, and `clearCustomData` manage session-scoped values attached to subsequent user messages. Explicitly ending the session clears those values.
 
+Every new session sends the device time zone as `sessionMetadata.interactionContext.timezone` on SDK init and the WebSocket ticket, matching the Web SDK. Set `ArtemisConnectionConfig.languageDetection = true` (YAML `connection.language_detection`) to also send the device language and locale (`interactionContext.language` / `locale`, `languageSource: "navigator"`). It is off by default, as on Web. Values in your own `sessionMetadata` win over the detected ones, key by key inside `interactionContext`.
+
 When Android removes the app task from Recents, the SDK ends each active Runtime session. `ArtemisSessionConfig.endSessionOnClose` separately controls whether tapping Close in the chat UI ends the session; it defaults to `false`.
 
 | Host customization | API |
@@ -38,9 +40,12 @@ Supported Web SDK fields:
 | `theme.assistantBubbleColor`, `assistantBubbleTextColor` | Assistant messages |
 | `theme.composeBarBackgroundColor`, `composeBarTextColor`, `composeBarPlaceholderColor` | Composer |
 | Numeric `theme.messageBubbleRadius` (0–32) | Message bubble radius in dp |
+| `theme.messageTimestampPosition` (`above` / `below`; default `below`) | Places each timestamp relative to its message bubble |
+| `theme.messageTimestampTimeFormat` (`12h` / `24h`; default locale format) | Selects the timestamp clock format |
+| `theme.messageTimestampDateFormat` (`locale`, `mm-dd-yy`, `dd-mm-yy`, `mmm-dd-yyyy`) | Selects the date shown with each timestamp |
 | `placeholderText`, `connectingStatusText` | Input hint and connecting label |
 
-A valid runtime value overrides the host theme. Missing, null, malformed, or unsupported values use the host setting, then native defaults. Runtime config removal clears the previous runtime overlay. Identical refresh branding does not invalidate templates. Launcher styling, CSS fonts/images, density and Web-specific radius presets are not interpreted as Android layout instructions. Light/dark mode remains an initialization setting.
+A valid runtime branding value overrides the host theme. Missing, null, malformed, or unsupported branding values use the host setting, then native defaults. Timestamp format falls back to the configured locale (device locale when the host has not set one), and position falls back to below the bubble. Runtime config removal clears the previous runtime overlay. Identical refresh branding does not invalidate templates. Launcher styling, CSS fonts/images, density and Web-specific radius presets are not interpreted as Android layout instructions. Light/dark mode remains an initialization setting.
 
 Runtime `widgetConfig.welcomeMessage` is shown in the empty conversation state and takes precedence over the optional host `ArtemisUIConfig.welcomeMessage`. The host value can be supplied in YAML as `chat.welcome_message`.
 
@@ -153,6 +158,8 @@ handle.showChat(activity, ChatOptions(
 ```
 
 The header context provides the current title and minimize/close actions. The footer context provides the SDK-owned `EditText` (preserving draft and input behavior), an enabled `StateFlow<Boolean>`, the attachment preview view, and send/optional attach callbacks. Include the input in the returned hierarchy; include `attachmentPreview` when users need to see selected files. Collect `enabled` with the host lifecycle to keep custom controls in sync. Omit either builder to keep that SDK-provided view. `runtimeUserContext` uses the socket schema (`user_id` and `custom_attributes`) and overrides the connection context for this chat. The app module has a styled version in `CustomChatheaderFooter.kt`.
+
+The default composer matches the Web SDK footer: one bordered pill with a 14dp outer margin, holding a transparent attach button (muted icon), a borderless input and a circular send button. The pill uses `composeBarBackgroundColor` (falling back to the background color), `borderColor`, and a corner radius of the theme border radius + 6 (22dp by default). The send button uses the header background color and is shown at 50% opacity while disabled. Buttons keep a 40dp touch target around their 30dp visible shape. A host `footerBuilder` still receives the input with its own bordered field.
 
 The default close button and Android Back show a Minimize / Close / Cancel prompt. A host-provided header’s `onClose` action uses the same prompt. The separate minimize control still minimizes immediately. Prompt text and button labels use `ArtemisStrings` keys `artemis_close_or_minimize`, `artemis_minimize_action`, `artemis_close_action`, and `artemis_cancel`. Closing with an active audio/video call sends the existing Contact Center `terminated` response first; dismissing a pending call invite sends its `rejected` response.
 

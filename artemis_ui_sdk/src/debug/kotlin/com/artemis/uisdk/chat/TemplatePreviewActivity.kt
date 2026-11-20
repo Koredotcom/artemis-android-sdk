@@ -37,6 +37,9 @@ class TemplatePreviewActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.artemis_title).text = "Artemis Assistant"
         findViewById<TextView>(R.id.artemis_status).text = "Template preview · Offline"
         findViewById<View>(R.id.artemis_empty).visibility = View.GONE
+        // Offline gallery: no Runtime branding to wait for, so skip the loading page.
+        findViewById<View>(R.id.artemis_loading).visibility = View.GONE
+        findViewById<View>(R.id.artemis_chat_surface).visibility = View.VISIBLE
         findViewById<View>(R.id.artemis_close).setOnClickListener { finish() }
         findViewById<View>(R.id.artemis_minimize).setOnClickListener { finish() }
         val contactCenterPreview = intent.getBooleanExtra("contactCenter", false)
@@ -135,7 +138,7 @@ class TemplatePreviewActivity : AppCompatActivity() {
             findViewById<TextView>(R.id.artemis_status).text = "Human-agent preview · Offline"
             previewMessages.clear()
             previewMessages += listOf(
-                ChatMessage("queue", role = MessageRole.SYSTEM, text = "Waiting for a human agent…"),
+                ChatMessage("queue", role = MessageRole.SYSTEM, text = "Waiting for a human agent."),
                 ChatMessage("connected", role = MessageRole.SYSTEM, text = "Connected to a human agent."),
                 ChatMessage("agent", role = MessageRole.ASSISTANT, text = "Hello, I can help with your request."),
                 ChatMessage("attachment", role = MessageRole.ASSISTANT, text = "Your document", attachments = listOf(AttachmentRef("offline-file", "confirmation.pdf", "application/pdf", 12345))),
@@ -143,6 +146,8 @@ class TemplatePreviewActivity : AppCompatActivity() {
                 ChatMessage("form", role = MessageRole.ASSISTANT, text = "Please complete this secure form.", agentLink = AgentLink("https://example.com/form", "Open form", AgentLinkKind.FORM)),
                 ChatMessage("survey", role = MessageRole.ASSISTANT, text = "How was your support experience?", transferSurvey = AgentTransferSurvey("nps", "offline-transfer", commentVisibility = "conditional", commentRatings = listOf(0,1,2,3,4,5,6))),
                 ChatMessage("survey-done", role = MessageRole.ASSISTANT, text = "Support feedback", transferSurvey = AgentTransferSurvey("csat", "offline-done", status = SurveySubmissionStatus.SUBMITTED)),
+                ChatMessage("closed", role = MessageRole.ASSISTANT, text = "Sudheer has now closed this conversation. Please reach out to us if you need any assistance again."),
+                ChatMessage("left", role = MessageRole.SYSTEM, text = ContactCenterContracts.AGENT_TRANSFER_DISCONNECT_MESSAGE),
             )
         }
         intent.getStringExtra("example")?.let { exampleId ->

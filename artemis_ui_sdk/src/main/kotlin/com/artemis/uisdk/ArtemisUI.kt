@@ -65,6 +65,7 @@ class ArtemisUiHandle internal constructor(
         resolveBranding(hostTheme, null, config.welcomeMessage),
         config.strings,
         typography = hostTypography,
+        timestampSettings = resolveMessageTimestampSettings(null),
         logoResolver = config.logoResolver,
     ))
     internal val presentation = mutablePresentation.asStateFlow()
@@ -145,8 +146,14 @@ class ArtemisUiHandle internal constructor(
     }
     private fun updateBranding() {
         val next = resolveBranding(hostTheme, runtimeWidget, config.welcomeMessage)
-        if (branding == next && presentation.value.typography == hostTypography) return
-        mutablePresentation.value = presentation.value.copy(branding = next, typography = hostTypography)
+        val nextTimestampSettings = resolveMessageTimestampSettings(runtimeWidget)
+        if (branding == next && presentation.value.typography == hostTypography &&
+            presentation.value.timestampSettings == nextTimestampSettings) return
+        mutablePresentation.value = presentation.value.copy(
+            branding = next,
+            typography = hostTypography,
+            timestampSettings = nextTimestampSettings,
+        )
         mutableBranding.value = next
     }
     private fun bumpRendererRevision() {
@@ -406,6 +413,47 @@ sealed interface ArtemisUiEvent {
     data class AgentJoined(val sessionId: String, val payload: JsonObject? = null, val timestamp: Long? = null) : ArtemisUiEvent
     data class AgentExited(val sessionId: String, val payload: JsonObject? = null, val timestamp: Long? = null) : ArtemisUiEvent
     data class AgentNotice(val sessionId: String, val payload: JsonObject? = null, val timestamp: Long? = null) : ArtemisUiEvent
+    /**
+     * Web SDK `agentConnected`: an agent accepted the conversation. [sessionId] is the Runtime session
+     * ID from `session_start`. [transferred] is true when the agent took over after a transfer. The agent
+     * fields are display data only; [agentAvatarUrl] is set only for an absolute http(s) URL.
+     */
+    data class AgentConnected(
+        val sessionId: String,
+        val timestamp: Long,
+        val transferred: Boolean,
+        val agentName: String? = null,
+        val agentAvatarUrl: String? = null,
+    ) : ArtemisUiEvent
+    /** Web SDK `agentTransferred`: the agent handed the conversation to another agent. [initiatedBy] is `agent` or `unknown`. */
+    data class AgentTransferred(val sessionId: String, val timestamp: Long, val initiatedBy: String) : ArtemisUiEvent
+    /**
+     * Web SDK `agentDisconnected`: the agent left. [reason] comes from the Runtime (for example
+     * `agent_closed` or `no_agents`) and is `unknown` when absent; handle unknown values with a default branch.
+     */
+    data class AgentDisconnected(val sessionId: String, val timestamp: Long, val reason: String) : ArtemisUiEvent
+    /**
+     * Web SDK `authTokenRefreshed`: the Runtime issued ([reason] `initial`) or renewed (`renewal`) a
+     * custom_auth credential for this chat. Times are ISO-8601 strings; the credential never reaches the app.
+     */
+    data class AuthTokenRefreshed(
+        val sessionId: String?,
+        val profile: String,
+        val reason: String,
+        val issuedAt: String,
+        val refreshAfter: String,
+    ) : ArtemisUiEvent
+    /**
+     * Web SDK `authContextRefreshRequested`: the Runtime asks the host for a new secure context before
+     * the chat's credential expires at [expiresAt]. Pass [refreshTicket] to your backend, which sends the
+     * new value to `POST /api/v1/sdk/customer-sessions` with that ticket. The SDK only forwards this.
+     */
+    data class AuthContextRefreshRequested(
+        val sessionId: String?,
+        val profile: String,
+        val refreshTicket: String,
+        val expiresAt: String,
+    ) : ArtemisUiEvent
     data class AgentMediaInvite(
         val callType: String,
         val conversationId: String?,

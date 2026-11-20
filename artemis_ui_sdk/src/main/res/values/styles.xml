@@ -1,8 +1,11 @@
 <resources>
     <style name="Theme.ArtemisUI.Base" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:statusBarColor">#2563EB</item>
+        <!-- Edge-to-edge: the chat header draws the status bar color on every API level. -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@color/artemis_background</item>
+        <!-- Same color as the loading page, so no Material default shows before the chat draws. -->
+        <item name="android:windowBackground">@color/artemis_background</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
     <style name="Theme.ArtemisUI" parent="Theme.ArtemisUI.Base" />

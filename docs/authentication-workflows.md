@@ -41,6 +41,15 @@ handle.setAuthorizationLauncher { request ->
 
 For a fully custom host UI, `handle.state` exposes `ChatMessage.authorization`. Use `beginAuthorization(messageId, rowId)` to obtain a one-use `ArtemisAuthorizationRequest`, then `completeAuthorization(request, result)`. `checkAuthorization` and `cancelAuthorization` use the same guarded transport paths as the native buttons. `DISMISSED`/`FAILED` restore retry without cancelling a workflow; explicit `cancelAuthorization` is the workflow cancellation command.
 
+## Custom-auth credential refresh
+
+Two Runtime signals are forwarded to `ArtemisUiHandle.addListener` without changing the chat, matching the Web SDK (ABLP-7306):
+
+- `ArtemisUiEvent.AuthTokenRefreshed(sessionId, profile, reason, issuedAt, refreshAfter)`: Runtime issued (`initial`) or renewed (`renewal`) a custom_auth credential. Only times are sent; the credential never reaches the app.
+- `ArtemisUiEvent.AuthContextRefreshRequested(sessionId, profile, refreshTicket, expiresAt)`: Runtime needs a new secure context before the credential expires. Pass `refreshTicket` to your backend, which sends the new value to `POST /api/v1/sdk/customer-sessions` with that ticket. The SDK runs no timer and sends nothing itself.
+
+Frames missing a required field, or with a `reason` other than `initial` or `renewal`, are ignored.
+
 ## State and compatibility
 
 - Requests are scoped to a handle, Runtime session, message, row and one-use request ID. Duplicate/stale host completions are ignored. Changed authorization URLs invalidate an in-progress launch. Only Runtime can mark a row Connected; a late local browser callback cannot downgrade it.

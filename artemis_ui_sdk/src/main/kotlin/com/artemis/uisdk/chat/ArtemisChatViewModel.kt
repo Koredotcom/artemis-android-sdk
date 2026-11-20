@@ -63,6 +63,8 @@ class ArtemisChatViewModel internal constructor(
     private var registeredConnectivityNetworkCallback: ConnectivityManager.NetworkCallback? = null
     private var hasStarted = false
     @Volatile private var isClosed = false
+    /** True from the start of [closeSession], before the handle resets branding for the next chat. */
+    val isSessionClosed: Boolean get() = isClosed
 
     init {
         artemisUiHandle.chatSessionShutdownCallback = ::closeSession
@@ -85,6 +87,7 @@ class ArtemisChatViewModel internal constructor(
                 .deploymentSlug(connectionConfig.deploymentSlug)
                 .userContext(artemisUiHandle.effectiveUserContext)
                 .sessionMetadata(connectionConfig.sessionMetadata)
+                .languageDetection(connectionConfig.languageDetection)
                 .clientSessionIdentifier(if (connectionConfig.clientSessionIdentifier) artemisUiHandle.clientSessionIdentifier else null)
                 .newSessionOnConnect(artemisUiHandle.requestsNewSession)
                 .unlimitedTransientReconnect(artemisUiHandle.config.reconnection.unlimitedTransientRetries)
@@ -937,6 +940,8 @@ class ArtemisChatViewModel internal constructor(
         setState(transcript.state)
         if (frame is ChatFrame.Authorization || frame is ChatFrame.Error) pruneAuthorizationOperations()
         emitFrameEvents(frame, previousState, previousSession)
+        val mediaEvent = (frame as? ChatFrame.ContactCenterMedia)?.event ?: (frame as? ChatFrame.Transfer)?.mediaFrame
+        if (mediaEvent is ContactCenterMediaFrame.UnsupportedInvite) declineUnsupportedMediaInvite(mediaEvent)
         if (frame is ChatFrame.Transfer && contactCenterEnabled && transcript.state.sessionId != null) {
             artemisUiHandle.emit(ArtemisUiEvent.AgentTransferChanged(transcript.state.agentTransferStatus.name))
             frame.mediaFrame?.let(::emitContactCenterMediaEvent)
@@ -1045,8 +1050,12 @@ class ArtemisChatViewModel internal constructor(
                     "agent:exited" -> artemisUiHandle.emit(ArtemisUiEvent.AgentExited(frame.sessionId, data, frame.timestamp))
                     "agent:notice" -> artemisUiHandle.emit(ArtemisUiEvent.AgentNotice(frame.sessionId, data, frame.timestamp))
                 }
+                // Typed lifecycle events carry the Runtime session ID, never the internal transfer key.
+                current.sessionId?.let { sessionId -> AgentLifecycleEvents.project(frame.eventType, frame.payload, frame.timestamp, sessionId) }
+                    ?.let(artemisUiHandle::emit)
             }
             is ChatFrame.ContactCenterMedia, is ChatFrame.Cancel -> Unit
+            is ChatFrame.HostSignal -> artemisUiHandle.emit(frame.event)
             is ChatFrame.Error -> artemisUiHandle.emit(ArtemisUiEvent.Error(
                 frame.code ?: "RUNTIME", frame.text, true,
             )).also {
@@ -1117,6 +1126,20 @@ class ArtemisChatViewModel internal constructor(
         ))
     }
 
+    /**
+     * Android has no screen-share or cobrowse surface. Decline the invite so the agent
+     * desk is not left waiting, using the Web SDK's `agent_media_control` values.
+     */
+    private fun declineUnsupportedMediaInvite(invite: ContactCenterMediaFrame.UnsupportedInvite) {
+        val client = artemisSocketClient ?: return
+        val type = if (invite.kind == "cobrowse") "cobrowse_rejected" else "webrtc_screenshare_reject"
+        try {
+            client.sendAgentMediaControl(type, invite.conversationId, invite.mediaSessionId, "unsupported_platform")
+        } catch (_: RuntimeException) {
+            // Not connected: Runtime ends the invite on its own timeout.
+        }
+    }
+
     private fun emitContactCenterMediaEvent(event: ContactCenterMediaFrame) {
         when (event) {
             is ContactCenterMediaFrame.Incoming -> event.call.let { invite ->
@@ -1153,6 +1176,7 @@ class ArtemisChatViewModel internal constructor(
                     }
                 }
             }
+            is ContactCenterMediaFrame.UnsupportedInvite -> Unit
             is ContactCenterMediaFrame.Terminated -> {
                 val reason = event.call.reason
                 val callId = event.call.callId

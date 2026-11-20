@@ -23,6 +23,8 @@ class ArtemisConnectionConfig @JvmOverloads constructor(
     val userContext: JsonObject? = null,
     val sessionMetadata: JsonObject? = null,
     val clientSessionIdentifier: Boolean = false,
+    /** Send the device language/locale as session metadata. Off by default, as on Web; the time zone is always sent. */
+    val languageDetection: Boolean = false,
 ) {
     override fun toString() =
         "ArtemisConnectionConfig(endpoint=$endpoint, projectId=$projectId, apiKey=<redacted>)"
@@ -240,6 +242,7 @@ object ArtemisConfigLoader {
                 sessionMetadata = (connection["session_metadata"] as? Map<*, *>)?.let {
                     com.google.gson.Gson().toJsonTree(it).asJsonObject
                 },
+                languageDetection = connection.readBoolean("language_detection", false),
             ),
             reconnection = ArtemisReconnectionConfig(
                 enabled = reconnection.readBoolean("enabled", true),

@@ -39,6 +39,45 @@ public class ArtemisSocketClientTest {
         assertEquals("session", frame.get("sessionId").getAsString());
         assertFalse(frame.get("messageId").getAsString().isEmpty());
     }
+    @Test public void timezoneIsAlwaysSentAndLanguageOnlyWhenEnabled() throws Exception {
+        start(config());
+        for (int index : new int[]{0, 1}) {
+            JsonObject metadata = JsonParser.parseString(h.bodies.get(index)).getAsJsonObject().getAsJsonObject("sessionMetadata");
+            JsonObject context = metadata.getAsJsonObject("interactionContext");
+            assertEquals(TimeZone.getDefault().getID(), context.get("timezone").getAsString());
+            assertFalse(context.has("language"));
+            assertFalse(metadata.has("languageSource"));
+        }
+    }
+    @Test public void sessionMetadataMergesDeviceValuesUnderHostValues() {
+        JsonObject detected = ArtemisSocketClient.buildSessionMetadata(null, true, "Asia/Kolkata", Locale.forLanguageTag("hi-IN"));
+        JsonObject context = detected.getAsJsonObject("interactionContext");
+        assertEquals("Asia/Kolkata", context.get("timezone").getAsString());
+        assertEquals("hi", context.get("language").getAsString());
+        assertEquals("hi-IN", context.get("locale").getAsString());
+        assertEquals("navigator", detected.get("languageSource").getAsString());
+        JsonObject explicit = JsonParser.parseString("{\"interactionContext\":{\"language\":\"en\"},\"channel\":\"app\"}").getAsJsonObject();
+        JsonObject merged = ArtemisSocketClient.buildSessionMetadata(explicit, true, "Asia/Kolkata", Locale.forLanguageTag("hi-IN"));
+        assertEquals("en", merged.getAsJsonObject("interactionContext").get("language").getAsString());
+        assertEquals("Asia/Kolkata", merged.getAsJsonObject("interactionContext").get("timezone").getAsString());
+        assertEquals("app", merged.get("channel").getAsString());
+        assertNull(ArtemisSocketClient.buildSessionMetadata(null, false, null, Locale.ROOT));
+        assertFalse(ArtemisSocketClient.buildSessionMetadata(null, true, "UTC", Locale.ROOT).getAsJsonObject("interactionContext").has("language"));
+    }
+    @Test public void agentMediaControlUsesWebWireContract() throws Exception {
+        start(config()); h.ready();
+        h.client.sendAgentMediaControl("cobrowse_rejected", "conversation", "media", "unsupported_platform");
+        JsonObject frame = h.lastFrame();
+        assertEquals("agent_media_control", frame.get("type").getAsString());
+        assertEquals("session", frame.get("sessionId").getAsString());
+        JsonObject value = frame.getAsJsonObject("value");
+        assertEquals("cobrowse_rejected", value.get("type").getAsString());
+        assertEquals("conversation", value.get("conversationId").getAsString());
+        assertEquals("media", value.get("mediaSessionId").getAsString());
+        assertEquals("unsupported_platform", value.get("reason").getAsString());
+        try { h.client.sendAgentMediaControl("call_agent_webrtc_accepted", null, null, null); fail(); }
+        catch (IllegalArgumentException expected) { }
+    }
     @Test public void sharedMessageIdMetadataAndPrivacyCapability() throws Exception {
         start(config()); h.message("{\"type\":\"session_start\",\"sessionId\":\"session\",\"capabilities\":{\"liveUserInputRedaction\":true}}");
         assertTrue(h.client.isLiveUserInputRedaction());

@@ -195,6 +195,24 @@ public final class ArtemisSocketClient {
         return requestId;
     }
 
+    private static final Set<String> MEDIA_CONTROL_TYPES = new HashSet<>(Arrays.asList(
+        "webrtc_screenshare_reject", "webrtc_screenshare_end", "cobrowse_rejected"));
+
+    /** Answers an agent media request (screen share, cobrowse) with the Web SDK's {@code agent_media_control} frame. */
+    public synchronized void sendAgentMediaControl(String type, String conversationId, String mediaSessionId, String reason) {
+        if (!MEDIA_CONTROL_TYPES.contains(type)) throw new IllegalArgumentException("Unsupported agent media control type");
+        JsonObject value = new JsonObject();
+        value.addProperty("type", type);
+        if (!isBlank(conversationId)) value.addProperty("conversationId", conversationId);
+        if (!isBlank(mediaSessionId)) value.addProperty("mediaSessionId", mediaSessionId);
+        if (!isBlank(reason)) value.addProperty("reason", reason);
+        JsonObject frame = new JsonObject();
+        frame.addProperty("type", "agent_media_control");
+        if (!isBlank(sessionId)) frame.addProperty("sessionId", sessionId);
+        frame.add("value", value);
+        sendFrame(frame);
+    }
+
     /** Sends the Contact Center call decision expected by the iOS/Web SDK contract. */
     public synchronized void respondToContactCenterCall(String decision, String callId,
                                                         String mediaSessionId, String callType,
@@ -797,7 +815,8 @@ public final class ArtemisSocketClient {
             if (!isBlank(configuration.getClientSessionIdentifier())) body.addProperty("clientSessionIdentifier", configuration.getClientSessionIdentifier());
             if (configuration.getUserContext() != null) body.add("userContext", configuration.getUserContext());
         }
-        if (configuration.getSessionMetadata() != null) body.add("sessionMetadata", configuration.getSessionMetadata());
+        JsonObject sessionMetadata = resolveSessionMetadata();
+        if (sessionMetadata != null) body.add("sessionMetadata", sessionMetadata);
         if (newSessionRequested) body.addProperty("sessionIntent", "new");
         JsonObject payload = executeJson(request.post(RequestBody.create(GSON.toJson(body), JSON)).build(), "SDK init");
         storeToken(payload, false);
@@ -866,9 +885,50 @@ public final class ArtemisSocketClient {
         }, Math.max(1000, tokenExpiresAt - System.currentTimeMillis() - 30000), TimeUnit.MILLISECONDS);
     }
 
+    /**
+     * Session metadata sent to SDK init and the WebSocket ticket, matching the Web SDK
+     * (ABLP-5342): the device time zone is always sent as {@code interactionContext.timezone};
+     * the device language is added when language detection is enabled; host-supplied
+     * {@code sessionMetadata} wins over both, key by key inside {@code interactionContext}.
+     */
+    private JsonObject resolveSessionMetadata() {
+        return buildSessionMetadata(configuration.getSessionMetadata(), configuration.isLanguageDetection(),
+            java.util.TimeZone.getDefault().getID(), java.util.Locale.getDefault());
+    }
+
+    static JsonObject buildSessionMetadata(JsonObject explicit, boolean detectLanguage, String timezone, java.util.Locale locale) {
+        JsonObject merged = new JsonObject();
+        JsonObject context = new JsonObject();
+        if (!isBlank(timezone)) context.addProperty("timezone", timezone.trim());
+        if (detectLanguage && locale != null) {
+            String language = locale.getLanguage();
+            if (!isBlank(language) && !"und".equals(language)) {
+                context.addProperty("language", language.toLowerCase(java.util.Locale.ROOT));
+                String tag = locale.toLanguageTag();
+                if (tag.contains("-")) context.addProperty("locale", tag);
+                merged.addProperty("languageSource", "navigator");
+            }
+        }
+        if (explicit != null) for (Map.Entry<String, JsonElement> entry : explicit.entrySet()) {
+            if ("interactionContext".equals(entry.getKey()) && entry.getValue().isJsonObject()) continue;
+            merged.add(entry.getKey(), entry.getValue().deepCopy());
+        }
+        if (explicit != null && explicit.has("interactionContext") && explicit.get("interactionContext").isJsonObject()) {
+            for (Map.Entry<String, JsonElement> entry : explicit.getAsJsonObject("interactionContext").entrySet()) {
+                if (entry.getValue().isJsonNull()) context.remove(entry.getKey());
+                else context.add(entry.getKey(), entry.getValue().deepCopy());
+            }
+        }
+        if (context.size() > 0) merged.add("interactionContext", context);
+        return merged.size() == 0 ? null : merged;
+    }
+
     private String requestWebSocketTicket(String token) throws IOException {
+        JsonObject ticketBody = new JsonObject();
+        JsonObject sessionMetadata = resolveSessionMetadata();
+        if (sessionMetadata != null) ticketBody.add("sessionMetadata", sessionMetadata);
         JsonObject payload = executeJson(new Request.Builder().url(httpEndpoint() + "/api/v1/sdk/ws-ticket")
-            .header("X-SDK-Token", token).post(RequestBody.create("{}", JSON)).build(), "WebSocket ticket");
+            .header("X-SDK-Token", token).post(RequestBody.create(GSON.toJson(ticketBody), JSON)).build(), "WebSocket ticket");
         String ticket = stringValue(payload, "ticket");
         if (isBlank(ticket)) throw new IOException("WebSocket ticket response did not contain a ticket");
         return ticket;

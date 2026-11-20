@@ -1,58 +1,93 @@
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- Root holds the chat surface and a neutral loading page shown until Runtime branding arrives,
+     so the default theme never flashes before the project's theme is applied. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/artemis_background"
-    android:orientation="vertical">
+    android:background="@color/artemis_background">
 
-    <include layout="@layout/artemis_chat_header" />
-
-    <FrameLayout
+    <LinearLayout
+        android:id="@+id/artemis_chat_surface"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:visibility="invisible">
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/artemis_messages"
+        <include layout="@layout/artemis_chat_header" />
+
+        <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:clipToPadding="false"
-            android:paddingStart="16dp"
-            android:paddingTop="16dp"
-            android:paddingEnd="16dp"
-            android:paddingBottom="8dp" />
+            android:layout_height="0dp"
+            android:layout_weight="1">
 
-        <include layout="@layout/artemis_chat_empty" />
-    </FrameLayout>
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/artemis_messages"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:paddingStart="16dp"
+                android:paddingTop="16dp"
+                android:paddingEnd="16dp"
+                android:paddingBottom="8dp" />
 
-    <TextView
-        android:id="@+id/artemis_typing"
+            <include layout="@layout/artemis_chat_empty" />
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/artemis_typing"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="20dp"
+            android:accessibilityLiveRegion="polite"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:text="@string/artemis_typing"
+            android:textColor="@color/artemis_muted"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/artemis_retry"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:text="@string/artemis_retry"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/artemis_error"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:accessibilityLiveRegion="polite"
+            android:padding="12dp"
+            android:textColor="@color/artemis_text"
+            android:visibility="gone" />
+
+        <include layout="@layout/artemis_chat_composer" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/artemis_loading"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginStart="20dp"
-        android:accessibilityLiveRegion="polite"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp"
-        android:text="@string/artemis_typing"
-        android:textColor="@color/artemis_muted"
-        android:textSize="13sp"
-        android:visibility="gone" />
+        android:layout_gravity="center"
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
 
-    <Button
-        android:id="@+id/artemis_retry"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:text="@string/artemis_retry"
-        android:visibility="gone" />
+        <ProgressBar
+            android:id="@+id/artemis_loading_progress"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:indeterminate="true"
+            android:indeterminateTint="@color/artemis_muted" />
 
-    <TextView
-        android:id="@+id/artemis_error"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:accessibilityLiveRegion="polite"
-        android:padding="12dp"
-        android:textColor="@color/artemis_text"
-        android:visibility="gone" />
-
-    <include layout="@layout/artemis_chat_composer" />
-</LinearLayout>
+        <TextView
+            android:id="@+id/artemis_loading_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:accessibilityLiveRegion="polite"
+            android:text="@string/artemis_connecting"
+            android:textColor="@color/artemis_muted"
+            android:textSize="14sp" />
+    </LinearLayout>
+</FrameLayout>

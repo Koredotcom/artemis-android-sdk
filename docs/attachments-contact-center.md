@@ -51,6 +51,28 @@ When `contactCenter` is enabled, Runtime transfer events can show queue and conn
 
 Supported transfer survey ratings include NPS (0–10), CSAT (1–5), and like/dislike (0/1). A matching Runtime acknowledgement updates the submission state. A survey needs to be delivered by Runtime to be displayed. If the device is offline when a survey is created, Runtime must replay its event or provide the definition in history for the SDK to show it after reconnecting.
 
+### Agent lifecycle events
+
+Alongside the raw `AgentJoined`, `AgentExited` and `AgentNotice` events, the SDK raises the Web SDK's typed lifecycle events. Each carries the Runtime session ID from `session_start`, never the internal transfer key:
+
+| Event | Web equivalent | Fields |
+| --- | --- | --- |
+| `ArtemisUiEvent.AgentConnected` | `agentConnected` | `transferred`, `agentName`, `agentAvatarUrl` (absolute http(s) only) |
+| `ArtemisUiEvent.AgentTransferred` | `agentTransferred` | `initiatedBy` (`agent` or `unknown`) |
+| `ArtemisUiEvent.AgentDisconnected` | `agentDisconnected` | `reason` (for example `agent_closed`, `no_agents`; `unknown` when absent) |
+
+A connect rebuilt from an agent message (`syntheticConnected`) raises no event. These value sets can grow, so handle unknown values with a default branch.
+
+### Screen share and cobrowse
+
+Android has no screen-share or cobrowse surface. When an agent invites the customer to either, the SDK declines it right away so the agent desk is not left waiting, using the Web SDK's frame. Only invites are answered; end and reconnect frames are ignored.
+
+```json
+{ "type": "agent_media_control", "sessionId": "…", "value": { "type": "webrtc_screenshare_reject", "conversationId": "…", "mediaSessionId": "…", "reason": "unsupported_platform" } }
+```
+
+Cobrowse uses `"type": "cobrowse_rejected"`. The decline is sent whether or not `contactCenter` is enabled.
+
 ### Agent media invites
 
 With `contactCenter` enabled, an `agent_transfer_event` containing an `agent:media` WebRTC invite opens a native Accept/Reject dialog in the SDK chat. The decision uses the iOS/Web SDK wire contract:

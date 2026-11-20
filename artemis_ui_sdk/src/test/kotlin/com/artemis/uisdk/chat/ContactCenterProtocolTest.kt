@@ -14,6 +14,56 @@ class ContactCenterProtocolTest {
     }
     private fun transfer(type: String, data: String = "{}", id: String = "transfer-session", timestamp: String = "2026-10-15T10:00:00Z") =
         ChatFrameParser.parse("""{"type":"agent_transfer_event","sessionId":"$id","event":{"type":"$type","timestamp":"$timestamp","data":$data}}""")!!
+    private val closeData = """{"event":"agent_closed","closeMessage":"Sudheer has now closed this conversation.","message":"Sudheer has now closed this conversation.","disconnectReason":"agent_closed","terminalChatPayload":true,"ablDurableFirstDisconnectDelivery":true}"""
+    @Test fun disconnectOlderThanTheLastAgentMessageStillRendersAndEndsTheTransfer() {
+        val t = transcript()
+        t.apply(transfer("agent:connected", timestamp = "2026-11-20T12:50:00Z"))
+        // Stamped after the provider's disconnect time (or by the device clock when a frame has none).
+        t.apply(transfer("agent:message", """{"message":"Anything else?","messageId":"m1"}""", timestamp = "2026-11-20T12:58:21Z"))
+        t.apply(transfer("agent:disconnected", closeData, timestamp = "2026-11-20T12:58:20.682Z"))
+        assertEquals(AgentTransferStatus.DISCONNECTED, t.state.agentTransferStatus)
+        assertEquals(listOf("Connected to a human agent.", "Anything else?", "Sudheer has now closed this conversation.",
+            "Human agent has disconnected. You are now back with the AI assistant."), t.state.messages.map { it.text })
+    }
+    @Test fun redeliveredDisconnectIsIdempotent() {
+        val t = transcript(); t.apply(transfer("agent:connected", timestamp = "2026-11-20T12:50:00Z"))
+        val disconnect = transfer("agent:disconnected", closeData, timestamp = "2026-11-20T12:58:20.682Z")
+        t.apply(disconnect); val rows = t.state.messages.size
+        t.apply(disconnect)
+        assertEquals(rows, t.state.messages.size)
+        assertEquals(AgentTransferStatus.DISCONNECTED, t.state.agentTransferStatus)
+    }
+    @Test fun lateDisconnectFromAnEarlierTransferDoesNotEndTheCurrentOne() {
+        val t = transcript()
+        t.apply(transfer("agent:connected", id = "first", timestamp = "2026-11-20T12:00:00Z"))
+        t.apply(transfer("agent:connected", id = "second", timestamp = "2026-11-20T13:00:00Z"))
+        t.apply(transfer("agent:disconnected", closeData, id = "first", timestamp = "2026-11-20T12:30:00Z"))
+        assertEquals(AgentTransferStatus.CONNECTED, t.state.agentTransferStatus)
+        assertEquals("second", t.state.agentTransferSessionId)
+        assertTrue(t.state.messages.any { it.text == "Sudheer has now closed this conversation." })
+    }
+    @Test fun staleQueueAndConnectTransitionsAreStillIgnored() {
+        val t = transcript()
+        t.apply(transfer("agent:connected", timestamp = "2026-11-20T12:50:00Z"))
+        t.apply(transfer("agent:queued", timestamp = "2026-11-20T12:40:00Z"))
+        assertEquals(AgentTransferStatus.CONNECTED, t.state.agentTransferStatus)
+        assertTrue(t.state.messages.none { it.text == "Waiting for a human agent." })
+    }
+    @Test fun transferStatusLinesUseWebWording() {
+        fun texts(type: String, data: String = "{}") = (transfer(type, data) as ChatFrame.Transfer).messages.map { it.role to it.text }
+        // Queued always uses the SDK text; a waiting message may carry provider text.
+        assertEquals(listOf(MessageRole.SYSTEM to "Waiting for a human agent."), texts("agent:queued", """{"message":"Conversation is in Queue"}"""))
+        assertEquals(listOf(MessageRole.SYSTEM to "Please hold"), texts("agent:waiting_message", """{"message":"Please hold"}"""))
+        assertEquals(listOf(MessageRole.SYSTEM to "Connected to a human agent."), texts("agent:connected"))
+        assertEquals(listOf(MessageRole.SYSTEM to "Priya joined"), texts("agent:connected", """{"noticeText":"Priya joined"}"""))
+        assertTrue(texts("agent:notice", """{"message":"ignored"}""").isEmpty())
+        assertEquals(listOf(MessageRole.ASSISTANT to "Bye", MessageRole.SYSTEM to "Human agent has disconnected. You are now back with the AI assistant."),
+            texts("agent:disconnected", """{"closeMessage":"Bye","disconnectReason":"agent_closed"}"""))
+        assertEquals(listOf(MessageRole.SYSTEM to "No agent is available right now. You are back with the AI assistant."),
+            texts("agent:disconnected", """{"disconnectReason":"no_agents"}"""))
+        assertTrue(texts("agent:disconnected", """{"disconnectReason":"transfer_to_email"}""").isEmpty())
+        assertTrue(texts("agent:disconnected", """{"suppressDisconnectNotice":true}""").isEmpty())
+    }
     @Test fun transferIdMayDifferFromRuntimeConversationId() {
         val t = transcript(); t.apply(transfer("agent:connected")); t.apply(transfer("agent:message", """{"message":"Hello","messageId":"provider-1"}"""))
         assertEquals(AgentTransferStatus.CONNECTED, t.state.agentTransferStatus)
@@ -124,7 +174,9 @@ class ContactCenterProtocolTest {
         val ended = ChatFrameParser.parse("""{"type":"agent_media","event":{"type":"agent:media","data":{"providerEventType":"call_agent_webrtc_terminated","mediaKind":"webrtc_call","action":"terminated","callId":"c","reason":"remote_ended"}}}""")
         assertTrue(ended is ChatFrame.ContactCenterMedia)
         assertTrue((ended as ChatFrame.ContactCenterMedia).event is ContactCenterMediaFrame.Terminated)
-        assertNull(ChatFrameParser.parse("""{"type":"agent_media","event":{"type":"agent:media","data":{"providerEventType":"webrtc_screenshare","mediaKind":"screen_share","action":"invite"}}}"""))
+        // Android has no screen-share surface: the invite becomes a decline, never a call prompt.
+        val screenShare = ChatFrameParser.parse("""{"type":"agent_media","event":{"type":"agent:media","data":{"providerEventType":"webrtc_screenshare","mediaKind":"screen_share","action":"invite"}}}""")
+        assertTrue((screenShare as ChatFrame.ContactCenterMedia).event is ContactCenterMediaFrame.UnsupportedInvite)
     }
     @Test fun failedTransferAttachmentsRemainVisibleAndDisabledByDeliveryMetadata() {
         val messages = ChatFrameParser.history("""[{"id":"u","role":"user","content":"Files","metadata":{"attachmentIds":["sent","failed"],"attachmentFilenames":["a.pdf","b.pdf"],"attachmentSizeBytes":[1,2],"agentTransferAttachmentFailedIds":["failed"],"agentTransferAttachmentDeliveryStatus":"partial"}}]""")

@@ -20,6 +20,7 @@ public final class ArtemisSocketConfiguration {
     private final String clientSessionIdentifier;
     private final JsonObject userContext;
     private final JsonObject sessionMetadata;
+    private final boolean languageDetection;
     private final boolean unlimitedTransientReconnect;
     private final boolean newSessionOnConnect;
     private final long idleTimeoutMs;
@@ -46,6 +47,7 @@ public final class ArtemisSocketConfiguration {
         clientSessionIdentifier = builder.clientSessionIdentifier;
         userContext = copy(builder.userContext);
         sessionMetadata = copy(builder.sessionMetadata);
+        languageDetection = builder.languageDetection;
         unlimitedTransientReconnect = builder.unlimitedTransientReconnect;
         newSessionOnConnect = builder.newSessionOnConnect;
         idleTimeoutMs = builder.idleTimeoutMs;
@@ -97,6 +99,8 @@ public final class ArtemisSocketConfiguration {
     public String getClientSessionIdentifier() { return clientSessionIdentifier; }
     public JsonObject getUserContext() { return copy(userContext); }
     public JsonObject getSessionMetadata() { return copy(sessionMetadata); }
+    /** When true, the device locale is sent as session language metadata (Web `languageDetection.enabled`). */
+    public boolean isLanguageDetection() { return languageDetection; }
     public boolean isNewSessionOnConnect() { return newSessionOnConnect; }
     public boolean isUnlimitedTransientReconnect() { return unlimitedTransientReconnect; }
     public long getIdleTimeoutMs() { return idleTimeoutMs; }
@@ -126,6 +130,7 @@ public final class ArtemisSocketConfiguration {
         private String clientSessionIdentifier;
         private JsonObject userContext;
         private JsonObject sessionMetadata;
+        private boolean languageDetection;
         private boolean unlimitedTransientReconnect;
         private boolean newSessionOnConnect;
         private long idleTimeoutMs;
@@ -140,6 +145,8 @@ public final class ArtemisSocketConfiguration {
         public Builder clientSessionIdentifier(String value) { clientSessionIdentifier = value; return this; }
         public Builder userContext(JsonObject value) { userContext = copy(value); return this; }
         public Builder sessionMetadata(JsonObject value) { sessionMetadata = copy(value); return this; }
+        /** Opt in to sending the device language and locale with new sessions. Disabled by default, as on Web. */
+        public Builder languageDetection(boolean value) { languageDetection = value; return this; }
         /** Opt in to Web retry policy; the legacy attempt limit remains the default. */
         public Builder newSessionOnConnect(boolean value) { newSessionOnConnect = value; return this; }
         public Builder unlimitedTransientReconnect(boolean value) { unlimitedTransientReconnect = value; return this; }

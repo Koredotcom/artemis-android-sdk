@@ -18,6 +18,8 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.artemis.uisdk.ArtemisUI
 import com.artemis.uisdk.ArtemisUiEvent
@@ -83,6 +85,10 @@ class ArtemisChatFragment : Fragment() {
     private var defaultHeaderView: View? = null
     private var defaultFooterView: View? = null
     private var customHeaderView: View? = null
+    /** Status bar height, applied to whichever header is installed so its color fills the bar (edge-to-edge). */
+    private var statusBarInsetTop = 0
+    private var headerInsetTarget: View? = null
+    private var headerBasePaddingTop = 0
     private var customHeaderTitle: String? = null
     private val customFooterEnabled = MutableStateFlow(false)
     private var incomingCallDialog: AlertDialog? = null
@@ -132,11 +138,13 @@ class ArtemisChatFragment : Fragment() {
         }
         val primaryColor = color(artemisUiHandle.config.theme.primary, Color.rgb(37, 99, 235))
         val chatRootView = inflater.inflate(R.layout.artemis_fragment_chat, container, false)
-        chatRootView.visibility = View.INVISIBLE
         chatRootView.findViewById<View>(R.id.artemis_empty).visibility = View.GONE
-        // Keep system chrome neutral while the themed chat surface is blank.
-        updateStatusBarColor(Color.WHITE)
+        // Until Runtime branding arrives, show only a neutral page with the connection status
+        // (artemis_loading); the themed surface stays hidden so no default theme flashes.
         artemisUiHandle.config.theme.background?.let { chatRootView.setBackgroundColor(color(it, Color.WHITE)) }
+        // Keep system chrome neutral, matching the loading page behind it.
+        updateStatusBarColor((chatRootView.background as? android.graphics.drawable.ColorDrawable)?.color
+            ?: requireContext().getColor(R.color.artemis_background))
         defaultHeaderView = chatRootView.findViewById(R.id.artemis_header)
         defaultFooterView = chatRootView.findViewById(R.id.artemis_composer)
         chatRootView.findViewById<View>(R.id.artemis_header).setBackgroundColor(Color.WHITE)
@@ -254,6 +262,7 @@ class ArtemisChatFragment : Fragment() {
         replaceChild(parent, current, replacement)
         customHeaderView = replacement
         customHeaderTitle = title
+        applyHeaderStatusBarInset()
     }
 
     private fun installCustomFooter() {
@@ -264,6 +273,9 @@ class ArtemisChatFragment : Fragment() {
         val preview = old.findViewById<View>(R.id.artemis_attachment_preview)
         (input.parent as? ViewGroup)?.removeView(input)
         (preview.parent as? ViewGroup)?.removeView(preview)
+        // Outside the SDK pill the input needs its own field outline, as before.
+        input.background = androidx.core.content.ContextCompat.getDrawable(requireContext(), R.drawable.artemis_composer_background)
+        input.setPaddingRelative(convertDpToPixels(14), input.paddingTop, convertDpToPixels(14), input.paddingBottom)
         val replacement = builder.build(requireContext(), ArtemisChatFooterContext(
             input = input,
             enabled = customFooterEnabled.asStateFlow(),
@@ -297,6 +309,7 @@ class ArtemisChatFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         if (isConfigurationUnavailable) return
         ArtemisTaskRemovalService.start(requireContext())
+        if (activity is ArtemisChatActivity) installSystemBarInsets(view)
         requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = showCloseAlert()
         })
@@ -331,12 +344,16 @@ class ArtemisChatFragment : Fragment() {
                 combine(artemisChatViewModel.state, artemisUiHandle.presentation, artemisChatViewModel.initializationComplete) { state, presentation, initialized ->
                     Triple(state, presentation, initialized)
                 }.collect { (chatUiState, presentation, initialized) ->
+                    // Closing resets the handle's branding and state for the next chat while this
+                    // screen is still animating out; keep showing what the user last saw.
+                    if (artemisChatViewModel.isSessionClosed) return@collect
                     applyPresentation(view, presentation)
                     if (initialized) {
                         val theme = presentation.branding.theme
                         updateStatusBarColor(color(theme.headerBackground ?: theme.primary, requireContext().getColor(R.color.artemis_primary)))
                     }
-                    view.visibility = if (initialized) View.VISIBLE else View.INVISIBLE
+                    view.findViewById<View>(R.id.artemis_chat_surface).visibility = if (initialized) View.VISIBLE else View.INVISIBLE
+                    view.findViewById<View>(R.id.artemis_loading).visibility = if (initialized) View.GONE else View.VISIBLE
                     connectionStatusTextView.text = when {
                         chatUiState.isOffline -> label(R.string.artemis_offline)
                         chatUiState.connectionStatus == ConnectionStatus.CONNECTED -> when (chatUiState.agentTransferStatus) {
@@ -348,6 +365,14 @@ class ArtemisChatFragment : Fragment() {
                         chatUiState.connectionStatus == ConnectionStatus.RECONNECTING -> label(R.string.artemis_reconnecting)
                         chatUiState.connectionStatus == ConnectionStatus.FAILED -> chatUiState.errorMessage ?: label(R.string.artemis_connection_failed)
                         else -> chatUiState.errorMessage ?: label(R.string.artemis_disconnected)
+                    }
+                    if (!initialized) {
+                        // Branding text is not known yet, so the loading page uses SDK strings only.
+                        view.findViewById<TextView>(R.id.artemis_loading_status).text = when {
+                            chatUiState.isOffline -> label(R.string.artemis_offline)
+                            chatUiState.connectionStatus == ConnectionStatus.RECONNECTING -> label(R.string.artemis_reconnecting)
+                            else -> label(R.string.artemis_connecting)
+                        }
                     }
                     typingIndicatorTextView.text = chatUiState.activityText ?: if (chatUiState.agentTransferStatus == AgentTransferStatus.CONNECTED) label(R.string.artemis_agent_typing) else label(R.string.artemis_typing)
                     typingIndicatorTextView.visibility = if (artemisUiHandle.config.features.typingIndicator && (chatUiState.isTyping || chatUiState.initialAssistantMessagePending)) View.VISIBLE else View.GONE
@@ -457,7 +482,6 @@ class ArtemisChatFragment : Fragment() {
         if (appliedPresentation == value) return
         val theme = value.branding.theme
         val primary = color(theme.primary, requireContext().getColor(R.color.artemis_primary))
-        val foreground = color(theme.primaryForeground, if (androidx.core.graphics.ColorUtils.calculateLuminance(primary) > .5) Color.BLACK else Color.WHITE)
         val headerBackground = color(theme.headerBackground, primary)
         val headerText = color(theme.headerText, if (androidx.core.graphics.ColorUtils.calculateLuminance(headerBackground) > .5) Color.BLACK else Color.WHITE)
         root.setBackgroundColor(color(theme.background, requireContext().getColor(R.color.artemis_background)))
@@ -485,21 +509,40 @@ class ArtemisChatFragment : Fragment() {
             }
         }
         val border = color(theme.border, requireContext().getColor(R.color.artemis_border))
-        defaultFooterView?.apply {
-            setBackgroundColor(color(theme.composerBackground, requireContext().getColor(R.color.artemis_background)))
-            findViewById<View>(R.id.artemis_composer_divider).setBackgroundColor(border)
+        val widgetBackground = color(theme.background, requireContext().getColor(R.color.artemis_background))
+        // Web parity: --compose-bg falls back to the widget background, not the surface color.
+        val composeBackground = color(theme.composerBackground, widgetBackground)
+        // The chat background fills the navigation bar area; pick icons that stay readable on it.
+        activity?.takeIf { it is ArtemisChatActivity }?.window?.let { window ->
+            WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightNavigationBars =
+                androidx.core.graphics.ColorUtils.calculateLuminance(widgetBackground) > 0.5
         }
-        (messageInputEditText.background.mutate() as? android.graphics.drawable.GradientDrawable)?.apply {
-            setColor(color(theme.surface, requireContext().getColor(R.color.artemis_background)))
+        defaultFooterView?.apply {
+            // The composer shell sits on the widget background; only the pill carries the compose color.
+            setBackgroundColor(widgetBackground)
+            findViewById<View>(R.id.artemis_composer_divider).setBackgroundColor(border)
+            (findViewById<View>(R.id.artemis_composer_bar).background.mutate() as? android.graphics.drawable.GradientDrawable)?.apply {
+                setColor(composeBackground)
+                setStroke(convertDpToPixels(1).coerceAtLeast(1), border)
+                // Web: --composer-radius = borderRadius + 6.
+                cornerRadius = (theme.bubbleRadiusDp + 6f) * resources.displayMetrics.density
+            }
+        }
+        // A host footer receives the SDK input on its own, so it keeps a bordered field.
+        (messageInputEditText.background?.mutate() as? android.graphics.drawable.GradientDrawable)?.apply {
+            setColor(color(theme.surface, widgetBackground))
             setStroke(convertDpToPixels(1).coerceAtLeast(1), border)
         }
         messageInputEditText.setTextColor(color(theme.composerText ?: theme.text, requireContext().getColor(R.color.artemis_text)))
         messageInputEditText.setHintTextColor(color(theme.composerPlaceholder ?: theme.mutedText, requireContext().getColor(R.color.artemis_muted)))
         messageInputEditText.hint = value.branding.placeholderText ?: label(R.string.artemis_hint)
-        sendMessageButton.backgroundTintList = android.content.res.ColorStateList.valueOf(color(theme.userBubble, primary))
-        sendMessageButton.imageTintList = android.content.res.ColorStateList.valueOf(foreground)
+        // Web parity: --send-bg is the header background, with a readable foreground on it.
+        sendMessageButton.backgroundTintList = android.content.res.ColorStateList.valueOf(headerBackground)
+        sendMessageButton.imageTintList = android.content.res.ColorStateList.valueOf(
+            if (androidx.core.graphics.ColorUtils.calculateLuminance(headerBackground) > .5) Color.BLACK else Color.WHITE)
         sendMessageButton.contentDescription = label(R.string.artemis_send)
-        attachButton.imageTintList = android.content.res.ColorStateList.valueOf(color(theme.composerText ?: theme.text, requireContext().getColor(R.color.artemis_text)))
+        // Web parity: the attach button is transparent with the secondary text color.
+        attachButton.imageTintList = android.content.res.ColorStateList.valueOf(color(theme.mutedText, requireContext().getColor(R.color.artemis_muted)))
         val welcome = value.branding.welcomeMessage?.trim()?.takeIf(String::isNotEmpty)
         root.findViewById<TextView>(R.id.artemis_empty_title).apply {
             text = welcome ?: label(R.string.artemis_empty_title)
@@ -525,7 +568,8 @@ class ArtemisChatFragment : Fragment() {
         val hasAttachments = state.attachmentDrafts.isNotEmpty()
         sendMessageButton.isEnabled = messageInputEditText.isEnabled && !state.attachmentUploading && !state.attachmentUploadFailed &&
             (!hasAttachments || artemisChatViewModel.attachmentsEnabled) && !messageInputEditText.text.isNullOrBlank()
-        sendMessageButton.background.mutate().alpha = if (sendMessageButton.isEnabled) 255 else 128
+        // Web parity: the whole send button is at 50% opacity while disabled.
+        sendMessageButton.alpha = if (sendMessageButton.isEnabled) 1f else .5f
     }
 
     private fun sendCurrentMessage() {
@@ -629,9 +673,40 @@ class ArtemisChatFragment : Fragment() {
     private fun convertDpToPixels(densityIndependentPixels: Int) =
         (densityIndependentPixels * resources.displayMetrics.density).toInt()
 
+    /**
+     * Android 15+ draws apps edge-to-edge and ignores status/navigation bar colors. In the SDK's
+     * own activity, the header grows by the status bar height so its color fills the bar, and the
+     * chat root pads the navigation bar and keyboard so the chat background fills the bottom.
+     * An embedded fragment leaves insets to its host activity.
+     */
+    private fun installSystemBarInsets(root: View) {
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, windowInsets ->
+            val bars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            val keyboard = windowInsets.getInsets(WindowInsetsCompat.Type.ime())
+            view.setPadding(bars.left, 0, bars.right, maxOf(bars.bottom, keyboard.bottom))
+            statusBarInsetTop = bars.top
+            applyHeaderStatusBarInset()
+            windowInsets
+        }
+        ViewCompat.requestApplyInsets(root)
+    }
+
+    private fun applyHeaderStatusBarInset() {
+        val header = customHeaderView ?: defaultHeaderView ?: return
+        if (headerInsetTarget !== header) {
+            headerInsetTarget = header
+            headerBasePaddingTop = header.paddingTop
+        }
+        header.setPadding(header.paddingLeft, headerBasePaddingTop + statusBarInsetTop, header.paddingRight, header.paddingBottom)
+    }
+
     private fun updateStatusBarColor(color: Int) {
         activity?.window?.let { window ->
-            window.statusBarColor = color
+            // In the SDK activity the bar stays transparent on every API level and the header,
+            // padded by the status bar height, supplies the color. An embedded fragment keeps
+            // coloring its host's bar (ignored by Android 15+ when the host is edge-to-edge).
+            @Suppress("DEPRECATION")
+            window.statusBarColor = if (activity is ArtemisChatActivity) Color.TRANSPARENT else color
             WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars =
                 androidx.core.graphics.ColorUtils.calculateLuminance(color) > 0.5
         }

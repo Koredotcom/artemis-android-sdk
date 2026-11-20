@@ -1,5 +1,7 @@
 package com.artemis.uisdk.chat
 
+import android.icu.text.DateTimePatternGenerator
+import android.icu.util.ULocale
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.media.MediaPlayer
@@ -14,8 +16,13 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.artemis.uisdk.ArtemisFeatureConfig
+import com.artemis.uisdk.ArtemisTimestampDateFormat
+import com.artemis.uisdk.ArtemisMessageTimestampSettings
+import com.artemis.uisdk.ArtemisTimestampPosition
+import com.artemis.uisdk.ArtemisTimestampTimeFormat
 import com.artemis.uisdk.ArtemisThemeConfig
 import java.text.DateFormat
+import java.text.SimpleDateFormat
 import java.util.Date
 
 internal class ChatMessageAdapter(
@@ -88,6 +95,7 @@ internal class ChatMessageAdapter(
         val templateContainer: LinearLayout by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_message_templates) }
         val textView: TextView by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_message_text) }
         val timestampView: TextView by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_timestamp) }
+        val messageSourceView: TextView by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_message_source) }
         val answeredByAIView: View by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_answered_by_ai) }
         val answeredByAIIcon: ImageView by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_answered_by_ai_icon) }
         val answeredByAIText: TextView by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_answered_by_ai_text) }
@@ -113,7 +121,8 @@ internal class ChatMessageAdapter(
     fun updatePresentation(value: com.artemis.uisdk.ArtemisPresentation) {
         val previous = presentation
         if (previous?.branding?.theme == value.branding.theme && previous.strings === value.strings &&
-            previous.typography == value.typography && previous.rendererRevision == value.rendererRevision) return
+            previous.typography == value.typography && previous.timestampSettings == value.timestampSettings &&
+            previous.rendererRevision == value.rendererRevision) return
         presentation = value
         theme = value.branding.theme
         templates.updateTheme(theme)
@@ -271,6 +280,18 @@ internal class ChatMessageAdapter(
             if (isStandaloneRichTemplate) 0 else (12 * context.resources.displayMetrics.density).toInt(),
             if (isStandaloneRichTemplate) 0 else (12 * context.resources.displayMetrics.density).toInt(),
         )
+        // Web parity (`.message.system`): a plain-text system line (transfer status, notices) is
+        // centered muted text without a bubble. System cards such as authorization keep their layout.
+        val isStatusLine = message.role == MessageRole.SYSTEM && !containsRichContent
+        if (isStatusLine) {
+            holder.messageRowLayout.gravity = Gravity.CENTER_HORIZONTAL
+            messageBubble.background = null
+            messageTextView.setTextColor(color(theme.mutedText, context.getColor(com.artemis.uisdk.R.color.artemis_muted)))
+            messageTextView.textSize = 13f
+            messageTextView.gravity = Gravity.CENTER_HORIZONTAL
+        } else {
+            messageTextView.gravity = Gravity.START
+        }
         val maximumBubbleWidth = (availableRowWidth * if (isUserMessage) .82f else .94f).toInt()
         messageTextView.maxWidth =
             (maximumBubbleWidth - messageBubble.paddingLeft - messageBubble.paddingRight).coerceAtLeast(
@@ -321,14 +342,6 @@ internal class ChatMessageAdapter(
                         }
                     })
                 }
-                if (message.messageSource?.string("system") == "integration") templateContainer.addView(
-                    TextView(context).apply {
-                        text = message.messageSource.string("provider")
-                            ?: (handle?.text(com.artemis.uisdk.R.string.artemis_support_agent)
-                                ?: "Support agent")
-                        textSize = 12f
-                        setTextColor(context.getColor(com.artemis.uisdk.R.color.artemis_muted))
-                    })
                 message.actions?.let { messageActions ->
                     templates.renderActions(
                         context,
@@ -354,19 +367,49 @@ internal class ChatMessageAdapter(
                 color(theme.primary, context.getColor(com.artemis.uisdk.R.color.artemis_primary))
             )
         }
+        holder.messageSourceView.apply {
+            visibility = View.GONE
+            text = ""
+        }
+        val timestampSettings = presentation?.timestampSettings ?: ArtemisMessageTimestampSettings()
         holder.timestampView.apply {
             visibility =
                 if (features.timestamps && message.messageStatus != MessageStatus.STREAMING && message.role != MessageRole.SYSTEM) View.VISIBLE else View.GONE
-            text = DateFormat.getTimeInstance(
-                DateFormat.SHORT,
-                handle?.presentation?.value?.strings?.localeTag?.let(java.util.Locale::forLanguageTag)
-                    ?: java.util.Locale.getDefault()
-            ).format(Date(message.timestamp))
+            val locale = handle?.presentation?.value?.strings?.localeTag?.let(java.util.Locale::forLanguageTag)
+                ?: java.util.Locale.getDefault()
+            val date = Date(message.timestamp)
+            val dateText = when (timestampSettings.dateFormat) {
+                ArtemisTimestampDateFormat.LOCALE -> {
+                    val icuLocale = ULocale.forLocale(locale)
+                    val pattern = DateTimePatternGenerator.getInstance(icuLocale).getBestPattern("yMMMd")
+                    android.icu.text.SimpleDateFormat(pattern, icuLocale).format(date)
+                }
+                ArtemisTimestampDateFormat.MONTH_DAY_YEAR -> SimpleDateFormat("MM/dd/yy", locale).format(date)
+                ArtemisTimestampDateFormat.DAY_MONTH_YEAR -> SimpleDateFormat("dd/MM/yy", locale).format(date)
+                ArtemisTimestampDateFormat.NAMED_MONTH_DAY_YEAR -> SimpleDateFormat("MMM dd, yyyy", locale).format(date)
+            }
+            val timeFormatter = when (timestampSettings.timeFormat) {
+                ArtemisTimestampTimeFormat.LOCALE -> DateFormat.getTimeInstance(DateFormat.SHORT, locale)
+                ArtemisTimestampTimeFormat.TWELVE_HOUR -> SimpleDateFormat("h:mm a", locale)
+                ArtemisTimestampTimeFormat.TWENTY_FOUR_HOUR -> SimpleDateFormat("HH:mm", locale)
+            }
+            text = "$dateText • ${timeFormatter.format(date)}"
             setTextColor(
                 color(
                     theme.mutedText,
                     context.getColor(com.artemis.uisdk.R.color.artemis_muted)
                 )
+            )
+        }
+        val timestampIndex = holder.messageRowLayout.indexOfChild(holder.timestampView)
+        val targetTimestampIndex = if (timestampSettings.position == ArtemisTimestampPosition.ABOVE) {
+            0
+        } else holder.messageRowLayout.childCount - 1
+        if (timestampIndex != targetTimestampIndex) {
+            holder.messageRowLayout.removeView(holder.timestampView)
+            holder.messageRowLayout.addView(
+                holder.timestampView,
+                targetTimestampIndex.coerceAtMost(holder.messageRowLayout.childCount),
             )
         }
         presentation?.typography?.applyTo(holder.messageRowLayout)

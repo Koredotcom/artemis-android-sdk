@@ -18,6 +18,8 @@ internal sealed interface ChatFrame {
         val payload: JsonObject? = null,
     ) : ChatFrame
     data class ContactCenterMedia(val event: ContactCenterMediaFrame) : ChatFrame
+    /** A frame that only notifies the host app and never changes the conversation. */
+    data class HostSignal(val event: com.artemis.uisdk.ArtemisUiEvent) : ChatFrame
     data class Session(val payload: JsonObject) : ChatFrame
     data class Start(val id: String) : ChatFrame
     data class Chunk(val id: String, val text: String) : ChatFrame
@@ -84,6 +86,26 @@ internal object ChatFrameParser {
                     failed = p.flag("failed", status == "failed"),
                     payload = p.deepCopy(),
                 )
+            }
+            "auth_token_refreshed" -> {
+                val event = p.obj("event") ?: return null
+                val reason = event.string("reason")?.takeIf { it == "initial" || it == "renewal" } ?: return null
+                ChatFrame.HostSignal(com.artemis.uisdk.ArtemisUiEvent.AuthTokenRefreshed(
+                    sessionId = p.string("sessionId"),
+                    profile = event.string("profile") ?: return null,
+                    reason = reason,
+                    issuedAt = event.string("issuedAt") ?: return null,
+                    refreshAfter = event.string("refreshAfter") ?: return null,
+                ))
+            }
+            "auth_context_refresh_requested" -> {
+                val event = p.obj("event") ?: return null
+                ChatFrame.HostSignal(com.artemis.uisdk.ArtemisUiEvent.AuthContextRefreshRequested(
+                    sessionId = p.string("sessionId"),
+                    profile = event.string("profile") ?: return null,
+                    refreshTicket = event.string("refreshTicket")?.takeIf(String::isNotEmpty) ?: return null,
+                    expiresAt = event.string("expiresAt") ?: return null,
+                ))
             }
             "feedback.ack" -> ChatFrame.FeedbackAck(p.deepCopy())
             "agent_transfer_survey.ack" -> ChatFrame.SurveyAck(p.deepCopy())
@@ -262,7 +284,15 @@ internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, 
                 // distinct from session_start's Runtime session ID; socket generations reject stale sockets.
                 if (!contactCenterEnabled || state.sessionId == null) return
                 val transitionEvent = frame.eventType in setOf("agent:queued", "agent:waiting_message", "agent:connected", "agent:disconnected")
-                if (transitionEvent && frame.timestamp < lastTransferTransitionAt) return
+                val isDisconnect = frame.eventType == "agent:disconnected"
+                // The ordering clock also advances on agent messages and history, whose timestamps may be
+                // later than a provider's disconnect time (or the device clock when a frame has none).
+                // A disconnect's close message and status line therefore always render, as on Web; only
+                // older queue/connect transitions are dropped. Stable IDs keep redelivery idempotent.
+                if (transitionEvent && !isDisconnect && frame.timestamp < lastTransferTransitionAt) return
+                // A disconnect always ends the transfer it names, whatever its timestamp.
+                val endsCurrentTransfer = isDisconnect && state.agentTransferStatus != AgentTransferStatus.DISCONNECTED &&
+                    (state.agentTransferSessionId == null || state.agentTransferSessionId == frame.sessionId)
                 frame.messages.map(::presentation).forEach { incoming ->
                     if (incoming.text.isBlank() && incoming.attachments.isEmpty() && incoming.agentLink == null && incoming.transferSurvey == null) return@forEach
                     val identity = ContactCenterContracts.identity(incoming)
@@ -278,8 +308,8 @@ internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, 
                     "agent:disconnected" -> AgentTransferStatus.DISCONNECTED
                     else -> null
                 }
-                if (transition != null && frame.timestamp >= lastTransferTransitionAt) {
-                    lastTransferTransitionAt = frame.timestamp; transferLiveRevision++
+                if (transition != null && (frame.timestamp >= lastTransferTransitionAt || endsCurrentTransfer)) {
+                    lastTransferTransitionAt = maxOf(lastTransferTransitionAt, frame.timestamp); transferLiveRevision++
                     state = state.copy(agentTransferStatus = transition, agentTransferSessionId = frame.sessionId, isTyping = false,
                         activityText = null, initialAssistantMessagePending = false)
                     activeResponse?.let { cancelled.add(it); while (cancelled.size > 100) cancelled.remove(cancelled.first()) }
@@ -337,7 +367,7 @@ internal class ChatTranscript(private val contactCenterEnabled: Boolean = true, 
             }
             is ChatFrame.Activity -> activity(frame)
             is ChatFrame.Error -> { activeResponse = null; activeRequest = null; state = state.copy(isTyping = false, activityText = null, errorMessage = frame.text) }
-            is ChatFrame.FeedbackAck, is ChatFrame.SurveyAck -> Unit
+            is ChatFrame.FeedbackAck, is ChatFrame.SurveyAck, is ChatFrame.HostSignal -> Unit
             is ChatFrame.SessionEnd -> {
                 activeResponse = null; activeRequest = null
                 state = state.copy(isTyping = false, activityText = null)

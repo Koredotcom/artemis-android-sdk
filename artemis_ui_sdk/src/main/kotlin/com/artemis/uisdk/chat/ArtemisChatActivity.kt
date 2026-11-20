@@ -5,8 +5,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.commit
 import com.artemis.uisdk.ArtemisUI
 import com.artemis.uisdk.R
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 
 class ArtemisChatActivity : AppCompatActivity() {
     companion object {
@@ -28,13 +26,22 @@ class ArtemisChatActivity : AppCompatActivity() {
             return
         }
         setContentView(R.layout.artemis_activity_chat)
-        val chatContainerView = findViewById<android.view.View>(R.id.artemis_chat_container)
-        ViewCompat.setOnApplyWindowInsetsListener(chatContainerView) { view, windowInsets ->
-            val systemWindowInsets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
-            view.setPadding(systemWindowInsets.left, systemWindowInsets.top, systemWindowInsets.right, systemWindowInsets.bottom)
-            windowInsets
+        // Edge-to-edge on every API level, as Android 15+ enforces: ArtemisChatFragment pads its
+        // header for the status bar and its root for the navigation bar and keyboard.
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        @Suppress("DEPRECATION")
+        run {
+            // Android 14 and below still paint these colors over the content; keep them clear.
+            window.statusBarColor = android.graphics.Color.TRANSPARENT
+            // Dark navigation icons need API 26; below that, a light scrim keeps white icons readable.
+            window.navigationBarColor = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O)
+                android.graphics.Color.TRANSPARENT else 0x66000000
         }
-        ViewCompat.requestApplyInsets(chatContainerView)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            // No system scrim over the header color or the chat background.
+            window.isStatusBarContrastEnforced = false
+            window.isNavigationBarContrastEnforced = false
+        }
         if (savedInstanceState == null) {
             supportFragmentManager.commit {
                 replace(

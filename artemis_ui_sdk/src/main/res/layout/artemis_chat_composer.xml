@@ -5,20 +5,23 @@
     android:background="@color/artemis_background"
     android:orientation="vertical">
 
+    <!-- Kept for host code that styles it; the Web-aligned composer has no divider. -->
     <View
         android:id="@+id/artemis_composer_divider"
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:background="@color/artemis_border" />
+        android:background="@color/artemis_border"
+        android:visibility="gone" />
 
+    <!-- Web parity: a 14dp margin around one bordered pill holding attach, input and send. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:paddingStart="12dp"
-        android:paddingTop="5dp"
-        android:paddingEnd="12dp"
-        android:paddingBottom="5dp">
+        android:paddingStart="@dimen/artemis_composer_margin"
+        android:paddingTop="6dp"
+        android:paddingEnd="@dimen/artemis_composer_margin"
+        android:paddingBottom="@dimen/artemis_composer_margin">
 
         <LinearLayout
             android:id="@+id/artemis_attachment_preview"
@@ -52,20 +55,27 @@
         </LinearLayout>
 
         <LinearLayout
+            android:id="@+id/artemis_composer_bar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:background="@drawable/artemis_composer_bar_background"
             android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:minHeight="@dimen/artemis_composer_bar_min_height"
+            android:orientation="horizontal"
+            android:paddingStart="@dimen/artemis_composer_bar_padding_start"
+            android:paddingTop="@dimen/artemis_composer_bar_padding_vertical"
+            android:paddingEnd="@dimen/artemis_composer_bar_padding_end"
+            android:paddingBottom="@dimen/artemis_composer_bar_padding_vertical">
 
             <ImageButton
                 android:id="@+id/artemis_attach"
                 android:layout_width="@dimen/artemis_composer_action_size"
                 android:layout_height="@dimen/artemis_composer_action_size"
-                android:layout_marginEnd="8dp"
-                android:background="@drawable/artemis_control_background"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/artemis_composer_icon_ripple"
                 android:contentDescription="@string/artemis_attach_file"
-                android:padding="@dimen/artemis_composer_icon_padding"
-                android:scaleType="centerInside"
+                android:padding="@dimen/artemis_composer_attach_icon_padding"
+                android:scaleType="fitCenter"
                 android:src="@drawable/artemis_ic_attach"
                 android:visibility="gone" />
 
@@ -74,7 +84,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:background="@drawable/artemis_composer_background"
+                android:background="@null"
                 android:gravity="center_vertical"
                 android:hint="@string/artemis_hint"
                 android:imeOptions="actionSend"
@@ -83,23 +93,22 @@
                 android:maxLines="5"
                 android:minHeight="@dimen/artemis_composer_action_size"
                 android:minLines="1"
-                android:paddingStart="14dp"
+                android:paddingStart="5dp"
                 android:paddingTop="4dp"
-                android:paddingEnd="14dp"
                 android:paddingBottom="4dp"
                 android:textColor="@color/artemis_text"
                 android:textColorHint="@color/artemis_muted"
-                android:textSize="16sp" />
+                android:textSize="@dimen/artemis_composer_text_size" />
 
             <ImageButton
                 android:id="@+id/artemis_send"
                 android:layout_width="@dimen/artemis_composer_action_size"
                 android:layout_height="@dimen/artemis_composer_action_size"
-                android:layout_marginStart="8dp"
+                android:layout_marginStart="4dp"
                 android:background="@drawable/artemis_send_background"
                 android:contentDescription="@string/artemis_send"
-                android:padding="@dimen/artemis_composer_icon_padding"
-                android:scaleType="centerInside"
+                android:padding="@dimen/artemis_composer_send_icon_padding"
+                android:scaleType="fitCenter"
                 android:src="@drawable/artemis_ic_send" />
         </LinearLayout>
     </LinearLayout>
