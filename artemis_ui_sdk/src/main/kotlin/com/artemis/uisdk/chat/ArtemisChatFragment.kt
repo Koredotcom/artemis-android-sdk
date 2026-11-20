@@ -12,6 +12,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.fragment.app.Fragment
+import androidx.activity.OnBackPressedCallback
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.Lifecycle
@@ -21,6 +22,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.artemis.uisdk.ArtemisUI
 import com.artemis.uisdk.ArtemisUiEvent
 import com.artemis.uisdk.ArtemisUiHandle
+import com.artemis.uisdk.ArtemisTaskRemovalService
 import com.artemis.uisdk.R
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.combine
@@ -84,6 +86,7 @@ class ArtemisChatFragment : Fragment() {
     private var customHeaderTitle: String? = null
     private val customFooterEnabled = MutableStateFlow(false)
     private var incomingCallDialog: AlertDialog? = null
+    private var closePromptDialog: AlertDialog? = null
     private var displayedMediaInviteKey: String? = null
     private val handledMediaInviteKeys = linkedSetOf<String>()
     private var pendingMediaInvite: ArtemisUiEvent.AgentMediaInvite? = null
@@ -145,7 +148,7 @@ class ArtemisChatFragment : Fragment() {
             artemisUiHandle.minimizeChat()
             dismissChat()
         }
-        chatRootView.findViewById<View>(R.id.artemis_close).setOnClickListener { closeChat("CLOSE") }
+        chatRootView.findViewById<View>(R.id.artemis_close).setOnClickListener { showCloseAlert() }
         connectionStatusTextView = chatRootView.findViewById(R.id.artemis_status)
         typingIndicatorTextView = chatRootView.findViewById(R.id.artemis_typing)
         retryConnectionButton = chatRootView.findViewById<Button>(R.id.artemis_retry).apply {
@@ -245,7 +248,7 @@ class ArtemisChatFragment : Fragment() {
                 artemisUiHandle.minimizeChat()
                 dismissChat()
             },
-            onClose = { closeChat("CLOSE") },
+            onClose = { showCloseAlert() },
         ))
         require(replacement.parent == null) { "Custom chat header must be an unattached view" }
         replaceChild(parent, current, replacement)
@@ -291,7 +294,12 @@ class ArtemisChatFragment : Fragment() {
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
         if (isConfigurationUnavailable) return
+        ArtemisTaskRemovalService.start(requireContext())
+        requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = showCloseAlert()
+        })
         artemisUiHandleListenerRegistration = artemisUiHandle.addListener { event ->
             activity?.runOnUiThread {
                 if (!isAdded) return@runOnUiThread
@@ -529,8 +537,32 @@ class ArtemisChatFragment : Fragment() {
     }
 
     private fun closeChat(reason: String) {
-        artemisChatViewModel.closeSession(reason)
+        pendingMediaInvite?.takeIf { activeMediaEndpoint == null }?.let { invite ->
+            artemisChatViewModel.respondToAgentMediaInvite(invite.toAgentMediaInvite(), accepted = false)
+            pendingMediaInvite = null
+        }
+        activeMediaEndpoint?.let { endpoint ->
+            artemisChatViewModel.terminateAgentMediaCall(endpoint, "user_ended")
+        }
+        artemisChatViewModel.closeSession(if (activeMediaEndpoint != null) "END_SESSION" else reason)
         dismissChat()
+    }
+
+    private fun showCloseAlert() {
+        if (!isAdded || isRemoving || parentFragmentManager.isStateSaved || closePromptDialog?.isShowing == true) return
+        closePromptDialog = AlertDialog.Builder(requireContext())
+            .setMessage(label(R.string.artemis_close_or_minimize))
+            .setCancelable(false)
+            .setPositiveButton(label(R.string.artemis_minimize_action)) { _, _ ->
+                wasMinimized = true
+                artemisUiHandle.minimizeChat()
+                dismissChat()
+            }
+            .setNegativeButton(label(R.string.artemis_close_action)) { _, _ -> closeChat("CLOSE") }
+            .setNeutralButton(label(R.string.artemis_cancel)) { dialog, _ -> dialog.dismiss() }
+            .create()
+            .also { it.setOnDismissListener { closePromptDialog = null } }
+        closePromptDialog?.show()
     }
 
     private fun dismissChat() {

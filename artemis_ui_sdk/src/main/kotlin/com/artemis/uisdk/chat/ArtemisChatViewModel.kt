@@ -786,7 +786,9 @@ class ArtemisChatViewModel internal constructor(
         clearAuthorizationOperations()
         unregisterConnectivity()
         val client = artemisSocketClient
-        if (reason == "END_SESSION" || artemisUiHandle.config.session.endSessionOnClose) {
+        val shouldEndSession = reason == "END_SESSION" || artemisUiHandle.config.session.endSessionOnClose
+        if (BuildConfig.DEBUG) Log.d("ArtemisSessionEnd", "reason=$reason endSession=$shouldEndSession socketConnected=${client?.isConnected == true}")
+        if (shouldEndSession) {
             artemisUiHandle.requestNewSession()
             client?.endSession()
             mainThreadHandler.postDelayed({ client?.shutdown() }, 3_100)
@@ -822,6 +824,7 @@ class ArtemisChatViewModel internal constructor(
         override fun onSessionScopeChanged(scope: JsonObject) { applyAttachmentPolicy(scope) }
         override fun onLog(message: String) {
             if (BuildConfig.DEBUG && message.startsWith("ATTACHMENT ")) Log.d("ArtemisAttachment", message)
+            if (BuildConfig.DEBUG && message.startsWith("END_SESSION ")) Log.d("ArtemisSocket", message)
         }
         override fun onConnecting() {
             if (BuildConfig.DEBUG) Log.d("ArtemisSocket", "Connection state=CONNECTING")

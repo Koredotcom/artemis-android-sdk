@@ -44,6 +44,12 @@ object ArtemisUI {
     internal fun unregisterHandle(uiHandle: ArtemisUiHandle) {
         activeUiHandles.remove(uiHandle.handleIdentifier, uiHandle)
     }
+
+    internal fun endActiveSessionsAfterTaskRemoval() {
+        activeUiHandles.values.forEach { handle ->
+            runCatching { handle.endSessionForTaskRemoval() }
+        }
+    }
 }
 
 /** Application-scoped configuration handle. A single chat may be active per handle. */
@@ -284,6 +290,10 @@ class ArtemisUiHandle internal constructor(
         checkAvailable()
         requestNewSession()
         chatSessionShutdownCallback?.invoke("END_SESSION")
+    }
+
+    internal fun endSessionForTaskRemoval() {
+        if (!isClosed && chatSessionShutdownCallback != null) endSession()
     }
 
     internal fun finishChat(reason: String) {

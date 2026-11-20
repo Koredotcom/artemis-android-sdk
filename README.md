@@ -106,7 +106,7 @@ contains no MutableLiveData. Other release lint checks remain enabled.
 ## Optional attachments and human-agent chat
 
 The sample enables attachments and transferred-agent chat. Host apps can opt in with
-`ArtemisFeatureConfig(attachments = true, contactCenter = true)`. The attachment picker requires Runtime branding to enable `widgetConfig.theme.attachmentButtonEnabled` and the session to grant `attachment:write`. Up to five files can be sent per message. See the [attachments and transferred-agent guide](docs/attachments-contact-center.md) for configuration and behavior.
+`ArtemisFeatureConfig(attachments = true, contactCenter = true, showAnsweredByAI = true)`. The “Answered by AI” attribution is opt-in and can be localized with the `artemis_answered_by_ai` string override. The attachment picker requires Runtime branding to enable `widgetConfig.theme.attachmentButtonEnabled` and the session to grant `attachment:write`. Up to five files can be sent per message. See the [attachments and transferred-agent guide](docs/attachments-contact-center.md) for configuration and behavior.
 
 ### Customizing the chat UI
 

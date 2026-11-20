@@ -11,6 +11,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.res.ResourcesCompat
 import com.artemis.uisdk.ArtemisConnectionConfig
 import com.artemis.uisdk.ArtemisFeatureConfig
+import com.artemis.uisdk.ArtemisSessionConfig
 import com.artemis.uisdk.ArtemisThemeConfig
 import com.artemis.uisdk.ArtemisUI
 import com.artemis.uisdk.ArtemisUIConfig
@@ -86,8 +87,10 @@ class MainActivity : AppCompatActivity() {
                     attachments = true,
                     contactCenter = true,
                     advancedFeedback = true,
-                    authentication = true
+                    authentication = true,
+                    showAnsweredByAI = true,
                 ),
+                session = ArtemisSessionConfig(endSessionOnClose = true),
                 theme = ArtemisThemeConfig(primary = "#2563EB", mode = "system"),
                 typography = ArtemisTypographyConfig(
                     typeface = ResourcesCompat.getFont(applicationContext, R.font.bukra),

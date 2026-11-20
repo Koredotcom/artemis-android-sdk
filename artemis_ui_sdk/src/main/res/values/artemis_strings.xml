@@ -1,6 +1,11 @@
 <resources>
     <string name="artemis_close">Close chat</string>
     <string name="artemis_minimize">Minimize chat</string>
+    <string name="artemis_minimize_action">Minimize</string>
+    <string name="artemis_close_action">Close</string>
+    <string name="artemis_cancel">Cancel</string>
+    <string name="artemis_close_or_minimize">Would you like to minimize or close the chat?</string>
+    <string name="artemis_answered_by_ai">Answered by AI</string>
     <string name="artemis_send">Send message</string>
     <string name="artemis_hint">Type a message…</string>
     <string name="artemis_empty_title">No messages yet</string>

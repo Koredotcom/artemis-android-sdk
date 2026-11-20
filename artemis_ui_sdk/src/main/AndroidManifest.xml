@@ -18,5 +18,10 @@
             android:exported="false"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.ArtemisUI" />
+        <service
+            android:name="com.artemis.uisdk.ArtemisTaskRemovalService"
+            android:enabled="true"
+            android:exported="false"
+            android:stopWithTask="false" />
     </application>
 </manifest>

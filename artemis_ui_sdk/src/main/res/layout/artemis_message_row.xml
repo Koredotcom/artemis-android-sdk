@@ -9,6 +9,14 @@
         <LinearLayout android:id="@+id/artemis_message_templates" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:orientation="vertical" />
     </LinearLayout>
+    <LinearLayout android:id="@+id/artemis_answered_by_ai" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="4dp"
+        android:paddingStart="4dp" android:paddingEnd="4dp" android:visibility="gone">
+        <ImageView android:id="@+id/artemis_answered_by_ai_icon" android:layout_width="14dp" android:layout_height="14dp"
+            android:src="@drawable/artemis_ic_ai_sparkle" android:contentDescription="@null" />
+        <TextView android:id="@+id/artemis_answered_by_ai_text" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="4dp" android:textSize="11sp" android:textColor="@color/artemis_muted" />
+    </LinearLayout>
     <TextView android:id="@+id/artemis_timestamp" android:layout_width="wrap_content" android:layout_height="wrap_content"
         android:textSize="11sp" android:textColor="@color/artemis_muted" android:layout_marginTop="4dp"
         android:paddingStart="4dp" android:paddingEnd="4dp" />

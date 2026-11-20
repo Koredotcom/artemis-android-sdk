@@ -48,6 +48,7 @@ data class ArtemisFeatureConfig @JvmOverloads constructor(
     val contactCenter: Boolean = false,
     val advancedFeedback: Boolean = false,
     val authentication: Boolean = false,
+    val showAnsweredByAI: Boolean = false,
 )
 
 /** Client-side policy supplements the Runtime's project policy; it never overrides a server rejection. */
@@ -262,6 +263,7 @@ object ArtemisConfigLoader {
                 contactCenter = features.readBoolean("enable_contact_center", false),
                 advancedFeedback = features.readBoolean("enable_advanced_feedback", false),
                 authentication = features.readBoolean("enable_authentication", false),
+                showAnsweredByAI = features.readBoolean("show_answered_by_ai", false),
             ),
             attachment = configurationRoot.nestedMap("attachments").let { options ->
                 ArtemisAttachmentConfig(

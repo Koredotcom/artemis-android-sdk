@@ -120,9 +120,16 @@ public final class ArtemisSocketClient {
         endingSession = true;
         cancelAttachmentJobs("SESSION_CHANGED");
         cancel(refreshTask); cancel(idleTask); cancel(reconnectTask);
-        if (!connected || webSocket == null) { disconnect(); sdkToken = null; return; }
+        if (!connected || webSocket == null) {
+            notifyLog("END_SESSION skipped; socket is not connected");
+            disconnect(); sdkToken = null; return;
+        }
         JsonObject frame = new JsonObject(); frame.addProperty("type", "end_session");
-        if (!webSocket.send(GSON.toJson(frame))) { disconnect(); sdkToken = null; return; }
+        if (!webSocket.send(GSON.toJson(frame))) {
+            notifyLog("END_SESSION could not be queued");
+            disconnect(); sdkToken = null; return;
+        }
+        notifyLog("END_SESSION queued on the active WebSocket");
         int epoch = generation;
         endTask = scheduler.schedule(() -> { if (epoch == generation) disconnect(); }, 3, TimeUnit.SECONDS);
     }

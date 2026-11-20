@@ -8,6 +8,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
+import android.widget.ImageView
 import android.widget.TextView
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
@@ -87,6 +88,9 @@ internal class ChatMessageAdapter(
         val templateContainer: LinearLayout by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_message_templates) }
         val textView: TextView by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_message_text) }
         val timestampView: TextView by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_timestamp) }
+        val answeredByAIView: View by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_answered_by_ai) }
+        val answeredByAIIcon: ImageView by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_answered_by_ai_icon) }
+        val answeredByAIText: TextView by lazy { messageRowLayout.findViewById(com.artemis.uisdk.R.id.artemis_answered_by_ai_text) }
         var boundMessage: ChatMessage? = null
         var boundPresentation = -1
         var boundWidth = 0
@@ -336,6 +340,20 @@ internal class ChatMessageAdapter(
             }
         }
         if (drafts.isNotEmpty()) restoreEditableValues(holder.templateContainer, drafts)
+        val isHumanAgentMessage = message.messageSource?.string("system") == "integration"
+        holder.answeredByAIView.visibility = if (
+            features.showAnsweredByAI && message.role == MessageRole.ASSISTANT && !isHumanAgentMessage &&
+                message.messageStatus != MessageStatus.STREAMING
+        ) View.VISIBLE else View.GONE
+        if (holder.answeredByAIView.visibility == View.VISIBLE) {
+            holder.answeredByAIText.text = handle?.presentation?.value?.strings?.text(
+                context, com.artemis.uisdk.R.string.artemis_answered_by_ai
+            ) ?: context.getString(com.artemis.uisdk.R.string.artemis_answered_by_ai)
+            holder.answeredByAIText.setTextColor(color(theme.mutedText, context.getColor(com.artemis.uisdk.R.color.artemis_muted)))
+            holder.answeredByAIIcon.imageTintList = android.content.res.ColorStateList.valueOf(
+                color(theme.primary, context.getColor(com.artemis.uisdk.R.color.artemis_primary))
+            )
+        }
         holder.timestampView.apply {
             visibility =
                 if (features.timestamps && message.messageStatus != MessageStatus.STREAMING && message.role != MessageRole.SYSTEM) View.VISIBLE else View.GONE
