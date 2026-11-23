@@ -24,7 +24,9 @@ android {
         targetSdk 36
         versionCode 1
         versionName '1.0'
-        [ENDPOINT: '', PROJECT_ID: '', API_KEY: '', CHANNEL_ID: '', CHAT_TITLE: 'Support'].each { key, fallback ->
+        // CHANNEL_SECRET switches the sample to hosted bootstrap via /api/v1/sdk/customer-sessions.
+        [ENDPOINT: '', PROJECT_ID: '', API_KEY: '', CHANNEL_ID: '', CHANNEL_NAME: '', CHAT_TITLE: 'Support',
+         TENANT_ID: '', CHANNEL_SECRET: '', VERIFIED_USER_ID: '', CUSTOM_ATTRIBUTES_JSON: ''].each { key, fallback ->
             buildConfigField 'String', "ARTEMIS_SAMPLE_${key}", groovy.json.JsonOutput.toJson(sampleRuntimeValue(key, fallback))
         }
     }
@@ -47,6 +49,7 @@ dependencies {
     implementation project(':artemis_ui_sdk')
     implementation 'androidx.appcompat:appcompat:1.7.1'
     implementation 'com.google.android.material:material:1.12.0'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.robolectric:robolectric:4.16.1'
     // Build the local SDK so the sample exercises the changes under development.

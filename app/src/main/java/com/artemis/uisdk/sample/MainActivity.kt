@@ -18,6 +18,8 @@ import com.artemis.uisdk.ArtemisUIConfig
 import com.artemis.uisdk.ArtemisTypographyConfig
 import com.artemis.uisdk.ArtemisUiHandle
 import com.artemis.uisdk.ChatOptions
+import com.google.gson.JsonParseException
+import com.google.gson.JsonParser
 
 /** Minimal host-app integration sample. Runtime settings come from ignored local properties or environment variables. */
 class MainActivity : AppCompatActivity() {
@@ -27,7 +29,14 @@ class MainActivity : AppCompatActivity() {
     private var projectId = BuildConfig.ARTEMIS_SAMPLE_PROJECT_ID
     private var apiKey = BuildConfig.ARTEMIS_SAMPLE_API_KEY
     private var channelId = BuildConfig.ARTEMIS_SAMPLE_CHANNEL_ID
+    private var channelName = BuildConfig.ARTEMIS_SAMPLE_CHANNEL_NAME
     private var chatTitle = BuildConfig.ARTEMIS_SAMPLE_CHAT_TITLE
+    // Hosted bootstrap: set CHANNEL_SECRET to use /api/v1/sdk/customer-sessions instead of API_KEY.
+    private var tenantId = BuildConfig.ARTEMIS_SAMPLE_TENANT_ID
+    private var channelSecret = BuildConfig.ARTEMIS_SAMPLE_CHANNEL_SECRET
+    private var verifiedUserId = BuildConfig.ARTEMIS_SAMPLE_VERIFIED_USER_ID
+    private var customAttributesJson = BuildConfig.ARTEMIS_SAMPLE_CUSTOM_ATTRIBUTES_JSON
+    private var mintingInitialToken = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,53 +73,135 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openChat() {
-        if (endpoint.isBlank() || projectId.isBlank() || apiKey.isBlank()) {
+        val hostedBootstrap = channelSecret.isNotBlank()
+        if (endpoint.isBlank() || projectId.isBlank() || (!hostedBootstrap && apiKey.isBlank())) {
             Toast.makeText(
                 this,
-                "Set endpoint, project ID, and API key in sample-runtime.local.properties before opening chat.",
+                "Set endpoint, project ID, and API key (or channel secret) in sample-runtime.local.properties before opening chat.",
                 Toast.LENGTH_LONG,
             ).show()
             return
         }
 
-        try {
-            val channelIdentifier = channelId.trim()
-            val artemisUiConfiguration = ArtemisUIConfig(
-                connection = ArtemisConnectionConfig(
-                    endpoint = endpoint.trim(),
-                    projectId = projectId.trim(),
-                    apiKey = apiKey,
-                    channelId = channelIdentifier.ifEmpty { null },
-                    channelName = if (channelIdentifier.isEmpty()) "Support" else null,
-                ),
-                features = ArtemisFeatureConfig(
-                    attachments = true,
-                    contactCenter = true,
-                    advancedFeedback = true,
-                    authentication = true,
-                    showAnsweredByAI = true,
-                ),
-                session = ArtemisSessionConfig(endSessionOnClose = true),
-                theme = ArtemisThemeConfig(primary = "#2563EB", mode = "system"),
-                typography = ArtemisTypographyConfig(
-                    typeface = ResourcesCompat.getFont(applicationContext, R.font.bukra),
-                ),
-            )
-            val handle = artemisUiHandle ?: ArtemisUI.initialize(applicationContext, artemisUiConfiguration).also {
-                artemisUiHandle = it
-                CustomTemplateInjection.register(it)
+        // An existing handle keeps its own connection and token provider; just show it again.
+        artemisUiHandle?.let { showChat(it); return }
+        if (!hostedBootstrap) {
+            runCatchingConfig { initializeAndShow(apiKeyConnection()) }
+            return
+        }
+        if (mintingInitialToken) return
+        val provider = runCatchingConfig { customerSessionProvider() } ?: return
+        // Like a real host app, mint the first bootstrap token before opening chat. The same provider is
+        // handed to the SDK, which uses it for every later init (network retry, token loss, new chat).
+        mintingInitialToken = true
+        Thread({
+            val initialToken = runCatching { provider.getToken() }
+            runOnUiThread {
+                mintingInitialToken = false
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                initialToken.onSuccess { token ->
+                    runCatchingConfig { initializeAndShow(hostedBootstrapConnection(token, provider)) }
+                }.onFailure {
+                    Toast.makeText(this, "Could not start a customer session: ${it.message}", Toast.LENGTH_LONG).show()
+                }
             }
+        }, "SampleCustomerSession").start()
+    }
+
+    private fun initializeAndShow(connection: ArtemisConnectionConfig) {
+        val artemisUiConfiguration = ArtemisUIConfig(
+            connection = connection,
+            features = ArtemisFeatureConfig(
+                attachments = true,
+                contactCenter = true,
+                advancedFeedback = true,
+                authentication = true,
+                showAnsweredByAI = true,
+            ),
+            session = ArtemisSessionConfig(endSessionOnClose = true),
+            theme = ArtemisThemeConfig(primary = "#2563EB", mode = "system"),
+            typography = ArtemisTypographyConfig(
+                typeface = ResourcesCompat.getFont(applicationContext, R.font.bukra),
+            ),
+        )
+        val handle = ArtemisUI.initialize(applicationContext, artemisUiConfiguration).also {
+            artemisUiHandle = it
+            CustomTemplateInjection.register(it)
+        }
+        showChat(handle)
+    }
+
+    private fun showChat(handle: ArtemisUiHandle) {
+        runCatchingConfig {
             handle.showChat(this, ChatOptions(
                 title = chatTitle.ifBlank { "Chat" },
 //                headerBuilder = CustomChatheaderFooter.headerBuilder,
 //                footerBuilder = CustomChatheaderFooter.footerBuilder,
             ))
-        } catch (error: IllegalArgumentException) {
-            Toast.makeText(this, error.message ?: "Check the configuration", Toast.LENGTH_LONG).show()
-        } catch (error: IllegalStateException) {
-            Toast.makeText(this, error.message ?: "Chat could not be opened", Toast.LENGTH_LONG).show()
         }
     }
+
+    /** Shows configuration problems as a toast instead of crashing the sample. */
+    private fun <T> runCatchingConfig(block: () -> T): T? = try {
+        block()
+    } catch (error: IllegalArgumentException) {
+        Toast.makeText(this, error.message ?: "Check the configuration", Toast.LENGTH_LONG).show()
+        null
+    } catch (error: IllegalStateException) {
+        Toast.makeText(this, error.message ?: "Chat could not be opened", Toast.LENGTH_LONG).show()
+        null
+    }
+
+    private fun channelIdOrNull() = channelId.trim().ifEmpty { null }
+
+    private fun channelNameOrDefault() = channelName.trim().ifEmpty { "Support" }
+
+    private fun apiKeyConnection(): ArtemisConnectionConfig {
+        val resolvedChannelId = channelIdOrNull()
+        return ArtemisConnectionConfig(
+            endpoint = endpoint.trim(),
+            projectId = projectId.trim(),
+            apiKey = apiKey,
+            channelId = resolvedChannelId,
+            channelName = if (resolvedChannelId == null) channelNameOrDefault() else null,
+        )
+    }
+
+    private fun customerSessionProvider(): CustomerSessionBootstrapProvider {
+        val resolvedChannelId = channelIdOrNull()
+        val customAttributes = customAttributesJson.trim().takeIf { it.isNotEmpty() }?.let {
+            val parsed = try {
+                JsonParser.parseString(it)
+            } catch (error: JsonParseException) {
+                throw IllegalArgumentException("CUSTOM_ATTRIBUTES_JSON must be a JSON object")
+            }
+            require(parsed.isJsonObject) { "CUSTOM_ATTRIBUTES_JSON must be a JSON object" }
+            parsed.asJsonObject
+        }
+        return CustomerSessionBootstrapProvider(
+            endpoint = endpoint,
+            channelSecret = channelSecret.trim(),
+            tenantId = tenantId.trim(),
+            projectId = projectId.trim(),
+            channelId = resolvedChannelId,
+            channelName = if (resolvedChannelId == null) channelNameOrDefault() else null,
+            verifiedUserId = verifiedUserId.trim(),
+            customAttributes = customAttributes,
+        )
+    }
+
+    /**
+     * Hosted bootstrap: the bootstrap token owns channel and user context, so no API key or channel is
+     * passed. The SDK sends [initialToken] to its first init only; because bootstrap tokens are single
+     * use, every later init (after a network failure, SDK-token loss or "new chat") calls [provider].
+     */
+    private fun hostedBootstrapConnection(initialToken: String, provider: CustomerSessionBootstrapProvider) =
+        ArtemisConnectionConfig(
+            endpoint = endpoint.trim(),
+            projectId = projectId.trim(),
+            bootstrapToken = initialToken,
+            bootstrapTokenProvider = provider,
+        )
 
     override fun onDestroy() {
         if (isFinishing) artemisUiHandle?.close()

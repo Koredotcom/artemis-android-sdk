@@ -126,6 +126,59 @@ public class ArtemisSocketClientTest {
         assertEquals("android", initBody.get("platform").getAsString());
         assertNull(h.sockets.get(0).request.url().query());
     }
+    private static String initToken(Harness h, int index) {
+        List<String> inits = new ArrayList<>();
+        for (int i = 0; i < h.requests.size(); i++) if (h.requests.get(i).url().encodedPath().equals("/api/v1/sdk/init")) inits.add(h.bodies.get(i));
+        return JsonParser.parseString(inits.get(index)).getAsJsonObject().get("bootstrapToken").getAsString();
+    }
+    private static ArtemisSocketConfiguration.Builder hosted() {
+        return ArtemisSocketConfiguration.builder().endpoint("https://runtime.example.com").projectId("project").reconnection(true, 5, 1, 2);
+    }
+    @Test public void lostInitResponseRetriesWithFreshProviderTokenNotTheConsumedOne() throws Exception {
+        AtomicInteger minted = new AtomicInteger(); String first = "first-" + UUID.randomUUID();
+        h = new Harness(hosted().bootstrapToken(first).bootstrapTokenProvider(() -> "fresh-" + minted.incrementAndGet()).build());
+        h.failInits.set(1); h.client.connect(); h.awaitSockets(1); h.ready();
+        assertEquals(2, h.count("/api/v1/sdk/init"));
+        assertEquals(first, initToken(h, 0));
+        assertEquals("fresh-1", initToken(h, 1));
+        assertEquals(1, minted.get()); assertTrue(h.client.isConnected());
+    }
+    @Test public void initialTokenIsUsedOnceThenProviderOnEveryReinit() throws Exception {
+        AtomicInteger minted = new AtomicInteger(); String first = "first-" + UUID.randomUUID();
+        start(hosted().bootstrapToken(first).bootstrapTokenProvider(() -> "fresh-" + minted.incrementAndGet()));
+        h.ready(); assertEquals(0, minted.get());
+        FakeSocket socket = h.sockets.get(0); socket.listener.onClosed(socket, 4001, "SDK token rejected");
+        h.awaitSockets(2); h.ready();
+        assertEquals(first, initToken(h, 0)); assertEquals("fresh-1", initToken(h, 1));
+    }
+    @Test public void reopenedChatClientDoesNotResendFirstTokenAlreadySentByEarlierClient() throws Exception {
+        // Closing and reopening chat builds a new client from the same configuration.
+        AtomicInteger minted = new AtomicInteger(); String first = "first-" + UUID.randomUUID();
+        ArtemisSocketConfiguration shared = hosted().bootstrapToken(first).bootstrapTokenProvider(() -> "fresh-" + minted.incrementAndGet()).build();
+        start(hosted().bootstrapToken(first).bootstrapTokenProvider(() -> "fresh-" + minted.incrementAndGet()));
+        h.ready(); assertEquals(first, initToken(h, 0)); h.client.endSession(); h.client.shutdown();
+        h = new Harness(shared); h.client.connect(); h.awaitSockets(1); h.ready();
+        assertEquals(1, h.count("/api/v1/sdk/init"));
+        assertEquals("fresh-1", initToken(h, 0));
+    }
+    @Test public void providerOnlyMintsOnEveryInitAttempt() throws Exception {
+        AtomicInteger minted = new AtomicInteger();
+        h = new Harness(hosted().bootstrapTokenProvider(() -> "fresh-" + minted.incrementAndGet()).build());
+        h.failInits.set(2); h.client.connect(); h.awaitSockets(1);
+        assertEquals("fresh-1", initToken(h, 0)); assertEquals("fresh-2", initToken(h, 1)); assertEquals("fresh-3", initToken(h, 2));
+    }
+    @Test public void staticTokenWithoutProviderKeepsLegacyReuse() throws Exception {
+        h = new Harness(hosted().bootstrapToken("only").build());
+        h.failInits.set(1); h.client.connect(); h.awaitSockets(1);
+        assertEquals("only", initToken(h, 0)); assertEquals("only", initToken(h, 1));
+    }
+    @Test public void hostedInitBodyIsOneShotSoOkHttpCannotReplayIt() throws Exception {
+        start(hosted().bootstrapTokenProvider(() -> "hosted"));
+        assertTrue(h.requests.get(0).body().isOneShot());
+        h.client.shutdown();
+        start(config());
+        assertFalse(h.requests.get(0).body().isOneShot());
+    }
     @Test public void lateOldSocketCallbacksCannotDisconnectReplacement() throws Exception {
         start(config()); h.ready(); FakeSocket old = h.sockets.get(0); h.client.disconnect(); h.client.connect(); h.awaitSockets(2); h.ready();
         old.listener.onClosed(old, 1006, "late"); old.listener.onMessage(old, "{\"type\":\"session_start\",\"sessionId\":\"stale\"}");
@@ -499,6 +552,7 @@ public class ArtemisSocketClientTest {
         final List<Request> requests = new CopyOnWriteArrayList<>(); final List<String> bodies = new CopyOnWriteArrayList<>();
         final List<FakeSocket> sockets = new CopyOnWriteArrayList<>(); final ArtemisSocketClient client;
         volatile boolean changeScopeOnRefresh, blockInit;
+        final AtomicInteger failInits = new AtomicInteger();
         final CountDownLatch initEntered = new CountDownLatch(1), releaseInit = new CountDownLatch(1);
         final List<Runnable> callbacks = new CopyOnWriteArrayList<>();
         final AtomicInteger connectedCallbacks = new AtomicInteger(), disconnectedCallbacks = new AtomicInteger(), idleTimeoutCallbacks = new AtomicInteger();
@@ -516,6 +570,8 @@ public class ArtemisSocketClientTest {
                 if (request.body() != null) { okio.Buffer b = new okio.Buffer(); request.body().writeTo(b); body = b.readUtf8(); }
                 bodies.add(body); requests.add(request);
                 String path = request.url().encodedPath(); String payload;
+                // Models a reset after Runtime read the request: the bootstrap token is consumed, no response.
+                if (path.endsWith("/init") && failInits.getAndUpdate(n -> Math.max(0, n - 1)) > 0) throw new IOException("Connection reset");
                 if (path.endsWith("/init") && blockInit) {
                     initEntered.countDown();
                     try { if (!releaseInit.await(3,TimeUnit.SECONDS)) throw new IOException("Fixture timeout"); }
