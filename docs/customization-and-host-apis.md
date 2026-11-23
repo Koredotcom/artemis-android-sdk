@@ -10,7 +10,7 @@ History retrieval can be bounded with `history = ArtemisHistoryConfig(pageSize =
 
 Every new session sends the device time zone as `sessionMetadata.interactionContext.timezone` on SDK init and the WebSocket ticket, matching the Web SDK. Set `ArtemisConnectionConfig.languageDetection = true` (YAML `connection.language_detection`) to also send the device language and locale (`interactionContext.language` / `locale`, `languageSource: "navigator"`). It is off by default, as on Web. Values in your own `sessionMetadata` win over the detected ones, key by key inside `interactionContext`.
 
-When Android removes the app task from Recents, the SDK ends each active Runtime session. `ArtemisSessionConfig.endSessionOnClose` separately controls whether tapping Close in the chat UI ends the session; it defaults to `false`.
+When Android removes the app task from Recents, the SDK ends each active Runtime session. Tapping Close in the chat UI also ends the Runtime session by default. Set `ArtemisSessionConfig(endSessionOnClose = false)` or YAML `session.end_session_on_close: false` to disable end-session on explicit chat close.
 
 | Host customization | API |
 | --- | --- |
@@ -21,8 +21,11 @@ When Android removes the app task from Recents, the SDK ends each active Runtime
 | Strings and locale | `ArtemisStrings`, `updateStrings` |
 | Welcome message and per-chat identity | `ArtemisUIConfig.welcomeMessage`, `ChatOptions.runtimeUserContext` |
 | “Answered by AI” message attribution | `ArtemisFeatureConfig.showAnsweredByAI` |
+| Phone numbers in message text | `ArtemisFeatureConfig.linkifyPhoneNumbers` or YAML `features.linkify_phone_numbers` |
 
 The “Answered by AI” label is opt-in (`false` by default). When enabled, it appears below completed assistant messages (hidden while a response is streaming) and is omitted for messages marked as integration/human-agent content. Localize its label with the `artemis_answered_by_ai` string override.
+
+Phone-number linkification is enabled by default for user and assistant message text, matching XO behavior. Set `linkifyPhoneNumbers = false` or YAML `features.linkify_phone_numbers: false` to disable it. Tapping a recognized number opens the device dialer; the SDK does not place calls directly.
 
 ## Runtime branding
 

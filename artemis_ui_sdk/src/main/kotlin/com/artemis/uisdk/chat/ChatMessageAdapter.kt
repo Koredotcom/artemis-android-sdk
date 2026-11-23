@@ -5,7 +5,10 @@ import android.icu.util.ULocale
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.media.MediaPlayer
+import android.text.SpannableString
 import android.text.method.LinkMovementMethod
+import android.text.util.Linkify
+import android.util.Patterns
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -238,6 +241,15 @@ internal class ChatMessageAdapter(
                 )
             } ?: message.text
         val displayedMessageText = if (!isUserMessage && TemplateContracts.hasPreferredText(message)) "" else baseMessageText
+        val markdownText = !isUserMessage && features.markdown && message.metadata?.string("contentFormat") != "plain_text"
+        val renderedMessageText = if (markdownText) {
+            templates.parseMarkdown(context, displayedMessageText)
+        } else displayedMessageText
+        val linkedMessageText = if (features.linkifyPhoneNumbers && renderedMessageText.isNotBlank()) {
+            SpannableString(renderedMessageText).apply {
+                Linkify.addLinks(this, Patterns.PHONE, "tel:")
+            }
+        } else renderedMessageText
         val messageTextView = holder.textView
         messageTextView.apply {
             visibility = if (displayedMessageText.isBlank()) View.GONE else View.VISIBLE
@@ -252,13 +264,8 @@ internal class ChatMessageAdapter(
             )
             textSize = if (isUserMessage) 14f else 16f
             setLineSpacing(0f, 1.25f)
-            text =
-                if (!isUserMessage && features.markdown && message.metadata?.string("contentFormat") != "plain_text") templates.parseMarkdown(
-                    context,
-                    displayedMessageText
-                ) else displayedMessageText
-            movementMethod =
-                if (!isUserMessage && features.markdown && message.metadata?.string("contentFormat") != "plain_text") LinkMovementMethod.getInstance() else null
+            text = linkedMessageText
+            movementMethod = if (markdownText || features.linkifyPhoneNumbers) LinkMovementMethod.getInstance() else null
             setLinkTextColor(
                 if (isUserMessage) currentTextColor else color(
                     theme.primary,

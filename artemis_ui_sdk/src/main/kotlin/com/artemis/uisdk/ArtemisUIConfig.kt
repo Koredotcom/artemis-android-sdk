@@ -51,6 +51,8 @@ data class ArtemisFeatureConfig @JvmOverloads constructor(
     val advancedFeedback: Boolean = false,
     val authentication: Boolean = false,
     val showAnsweredByAI: Boolean = false,
+    /** Automatically make phone numbers in user and assistant messages tappable. */
+    val linkifyPhoneNumbers: Boolean = true,
 )
 
 /** Client-side policy supplements the Runtime's project policy; it never overrides a server rejection. */
@@ -113,7 +115,7 @@ data class ArtemisSessionConfig(
     val idleDisconnectTimeoutMs: Long = 0,
     val endSessionOnIdle: Boolean = false,
     val staleSessionRefreshMs: Long = 0,
-    val endSessionOnClose: Boolean = false,
+    val endSessionOnClose: Boolean = true,
 )
 
 /** Bounded history retrieval; defaults preserve the original Android behavior. */
@@ -267,6 +269,7 @@ object ArtemisConfigLoader {
                 advancedFeedback = features.readBoolean("enable_advanced_feedback", false),
                 authentication = features.readBoolean("enable_authentication", false),
                 showAnsweredByAI = features.readBoolean("show_answered_by_ai", false),
+                linkifyPhoneNumbers = features.readBoolean("linkify_phone_numbers", true),
             ),
             attachment = configurationRoot.nestedMap("attachments").let { options ->
                 ArtemisAttachmentConfig(
@@ -284,7 +287,7 @@ object ArtemisConfigLoader {
                     idleDisconnectTimeoutMs = session.readLong("idle_disconnect_timeout_ms", 0),
                     endSessionOnIdle = session.readBoolean("end_session_on_idle", false),
                     staleSessionRefreshMs = session.readLong("stale_session_refresh_ms", 0),
-                    endSessionOnClose = session.readBoolean("end_session_on_close", false),
+                    endSessionOnClose = session.readBoolean("end_session_on_close", true),
                 )
             },
             strings = configurationRoot.nestedMap("strings").let { strings ->
