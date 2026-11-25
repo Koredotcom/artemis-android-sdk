@@ -24,4 +24,17 @@ public class ArtemisSocketConfigurationTest {
         assertEquals("bt", ArtemisSocketConfiguration.builder().endpoint("https://runtime.example.com")
             .projectId("p").bootstrapToken("bt").build().getBootstrapToken());
     }
+    @Test public void initialBootstrapTokenMayPairWithProvider() {
+        ArtemisSocketConfiguration c = ArtemisSocketConfiguration.builder().endpoint("https://runtime.example.com")
+            .projectId("p").bootstrapToken("bt").bootstrapTokenProvider(() -> "fresh").build();
+        assertEquals("bt", c.getBootstrapToken());
+        assertNotNull(c.getBootstrapTokenProvider());
+    }
+    @Test(expected=IllegalArgumentException.class) public void apiKeyCannotPairWithProvider() {
+        ArtemisSocketConfiguration.builder().endpoint("https://runtime.example.com").projectId("p")
+            .apiKey("pk").bootstrapTokenProvider(() -> "fresh").channelName("mobile").build();
+    }
+    @Test(expected=IllegalArgumentException.class) public void someCredentialIsRequired() {
+        ArtemisSocketConfiguration.builder().endpoint("https://runtime.example.com").projectId("p").build();
+    }
 }

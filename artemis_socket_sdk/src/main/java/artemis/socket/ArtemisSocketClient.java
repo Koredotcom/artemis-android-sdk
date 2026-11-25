@@ -44,6 +44,9 @@ public final class ArtemisSocketClient {
     private volatile JsonObject sessionScope = new JsonObject();
     private volatile String sdkToken;
     private volatile long tokenExpiresAt;
+    // Bootstrap tokens are single use for the whole app, not per client: closing and reopening chat creates
+    // a new client from the same configuration. Only SHA-256 digests are kept, never the tokens themselves.
+    private static final Set<String> SENT_BOOTSTRAP_TOKENS = ConcurrentHashMap.newKeySet();
     private int reconnectAttempts;
     private int cappedReconnectAttempts;
     private volatile int generation;
@@ -802,9 +805,9 @@ public final class ArtemisSocketClient {
         body.addProperty("platform", "android");
         Request.Builder request = new Request.Builder().url(httpEndpoint() + "/api/v1/sdk/init")
             .header("Content-Type", "application/json");
-        if (isBlank(configuration.getApiKey())) {
-            String bootstrap = configuration.getBootstrapTokenProvider() == null ? configuration.getBootstrapToken()
-                : configuration.getBootstrapTokenProvider().getToken();
+        boolean hostedBootstrap = isBlank(configuration.getApiKey());
+        if (hostedBootstrap) {
+            String bootstrap = nextBootstrapToken();
             if (isBlank(bootstrap)) throw new IOException("Bootstrap provider returned an empty token");
             body.addProperty("bootstrapToken", bootstrap.trim());
         } else {
@@ -818,10 +821,48 @@ public final class ArtemisSocketClient {
         JsonObject sessionMetadata = resolveSessionMetadata();
         if (sessionMetadata != null) body.add("sessionMetadata", sessionMetadata);
         if (newSessionRequested) body.addProperty("sessionIntent", "new");
-        JsonObject payload = executeJson(request.post(RequestBody.create(GSON.toJson(body), JSON)).build(), "SDK init");
+        RequestBody initBody = RequestBody.create(GSON.toJson(body), JSON);
+        // A bootstrap token is consumed when Runtime reads it. Stop OkHttp silently resending it after a
+        // mid-request connection reset; the SDK's own retry asks the provider for a fresh token instead.
+        if (hostedBootstrap) initBody = oneShot(initBody);
+        JsonObject payload = executeJson(request.post(initBody).build(), "SDK init");
         storeToken(payload, false);
         if (intentRevision == newSessionRevision) newSessionRequested = false;
         return sdkToken;
+    }
+
+    /**
+     * The host's first bootstrap token goes to the first init in this app process only, across all clients.
+     * Once it has been sent it may have been consumed even if the response was lost, so every later init,
+     * including one from a new client after chat is closed and reopened, asks the provider for a new one.
+     * Without a provider the configured token is the only credential and is reused, as before.
+     */
+    private String nextBootstrapToken() throws Exception {
+        ArtemisSocketConfiguration.BootstrapTokenProvider provider = configuration.getBootstrapTokenProvider();
+        String initial = configuration.getBootstrapToken();
+        if (provider == null) return initial;
+        if (!isBlank(initial) && SENT_BOOTSTRAP_TOKENS.add(digest(initial.trim()))) return initial;
+        return provider.getToken();
+    }
+
+    private static String digest(String value) {
+        try {
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256").digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte b : hash) hex.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 unavailable", impossible);
+        }
+    }
+
+    private static RequestBody oneShot(RequestBody body) {
+        return new RequestBody() {
+            @Override public MediaType contentType() { return body.contentType(); }
+            @Override public long contentLength() throws IOException { return body.contentLength(); }
+            @Override public void writeTo(okio.BufferedSink sink) throws IOException { body.writeTo(sink); }
+            @Override public boolean isOneShot() { return true; }
+        };
     }
 
     private String refreshToken() throws IOException {

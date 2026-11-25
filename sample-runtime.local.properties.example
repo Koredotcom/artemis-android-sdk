@@ -5,3 +5,13 @@ PROJECT_ID=your-project-id
 API_KEY=your-public-sdk-key
 CHANNEL_ID=your-channel-id
 CHAT_TITLE=Support
+CHANNEL_NAME=
+
+# Hosted bootstrap (optional). When CHANNEL_SECRET is set, the sample ignores API_KEY and
+# mints a fresh single-use bootstrap token from POST /api/v1/sdk/customer-sessions for every
+# SDK init. Demo only: a production app must call this from its own backend, never ship the secret.
+TENANT_ID=your-tenant-id
+CHANNEL_SECRET=
+VERIFIED_USER_ID=your-verified-user-id
+# Optional JSON object sent as customAttributes.
+CUSTOM_ATTRIBUTES_JSON={"plan":"gold"}

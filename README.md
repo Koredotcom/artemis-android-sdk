@@ -73,6 +73,28 @@ handle.showChat(this, ChatOptions(title = "Support"))
 
 Alternatively, use `handle.createChatFragment()` in a `FragmentActivity` container. Close the handle when the host no longer needs it.
 
+### Hosted bootstrap tokens
+
+Instead of a public API key, a host can sign users in through its backend, which calls `POST /api/v1/sdk/customer-sessions` and returns a hosted bootstrap token. Bootstrap tokens are **single use**: Runtime consumes one on `/api/v1/sdk/init` even if the response is then lost to a network failure. Give the SDK a `bootstrapTokenProvider` so it can get a fresh token whenever it has to run init again:
+
+```kotlin
+val provider = ArtemisSocketConfiguration.BootstrapTokenProvider {
+    myBackend.createCustomerSession().bootstrapToken // Blocking call; return a NEW token every time.
+}
+ArtemisConnectionConfig(
+    endpoint = "https://runtime.example.com",
+    projectId = "your-project-id",
+    bootstrapToken = firstToken,      // Optional: a token the app already minted.
+    bootstrapTokenProvider = provider,
+)
+```
+
+- `bootstrapToken` together with a provider: the token is sent to the first init only. Every later init (a retry after a network failure, a rejected or expired SDK token, starting a new conversation) calls the provider.
+- Provider only: the provider is called for every init.
+- `bootstrapToken` only: the same token is reused, so the chat cannot recover once that token is consumed. Avoid this outside tests.
+
+The provider runs on an SDK background thread. Do not reuse or cache tokens in it. The SDK also stops OkHttp from silently resending a hosted init request. The channel secret used by `customer-sessions` is a server credential: keep it on your backend. The sample app calls the endpoint directly only for demonstration; set `CHANNEL_SECRET`, `TENANT_ID` and `VERIFIED_USER_ID` in `sample-runtime.local.properties` to try it.
+
 The YAML loader accepts `sdk_configurations.yaml` under the `artemis_ui_sdk` or `artemis_ui_plugin` root key. An optional environment override uses the sibling filename `sdk_configurations.<environment>.yaml` and recursively overrides the base configuration.
 
 ## Socket dependency status

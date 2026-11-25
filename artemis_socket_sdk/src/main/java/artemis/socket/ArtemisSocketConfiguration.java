@@ -29,6 +29,12 @@ public final class ArtemisSocketConfiguration {
     private final int historyPageSize;
     private final int maxHistoryPages;
 
+    /**
+     * Supplies a hosted bootstrap token for {@code /api/v1/sdk/init}. Bootstrap tokens are single use,
+     * so return a newly minted token on every call. It is called on an SDK background thread before
+     * each init: after a network failure, after the SDK token is rejected, and when a new conversation
+     * is started.
+     */
     public interface BootstrapTokenProvider { String getToken() throws Exception; }
 
     private ArtemisSocketConfiguration(Builder builder) {
@@ -139,7 +145,13 @@ public final class ArtemisSocketConfiguration {
         private int historyPageSize = 100;
         private int maxHistoryPages = 20;
 
+        /**
+         * A bootstrap token the host already minted. It is sent to the first init only when a
+         * {@link #bootstrapTokenProvider} is also set; every later init then uses the provider.
+         * Without a provider this token is the only credential and is reused on every init.
+         */
         public Builder bootstrapToken(String value) { bootstrapToken = value; return this; }
+        /** Mints fresh single-use bootstrap tokens. May be combined with {@link #bootstrapToken}. */
         public Builder bootstrapTokenProvider(BootstrapTokenProvider value) { bootstrapTokenProvider = value; return this; }
         public Builder deploymentSlug(String value) { deploymentSlug = value; return this; }
         public Builder clientSessionIdentifier(String value) { clientSessionIdentifier = value; return this; }
@@ -193,8 +205,11 @@ public final class ArtemisSocketConfiguration {
         public ArtemisSocketConfiguration build() {
             require(endpoint, "endpoint");
             require(projectId, "project_id");
-            int credentials = (isBlank(apiKey) ? 0 : 1) + (isBlank(bootstrapToken) ? 0 : 1) + (bootstrapTokenProvider == null ? 0 : 1);
-            if (credentials != 1) throw new IllegalArgumentException("Exactly one API key, bootstrap token or provider is required");
+            // A first bootstrap token may be paired with a provider for later inits; never with an API key.
+            boolean hostedBootstrap = !isBlank(bootstrapToken) || bootstrapTokenProvider != null;
+            if (isBlank(apiKey) == !hostedBootstrap) {
+                throw new IllegalArgumentException("Exactly one of an API key or hosted bootstrap (token and/or provider) is required");
+            }
             if (!isBlank(apiKey) && isBlank(channelId) && isBlank(channelName) && isBlank(deploymentSlug)) {
                 throw new IllegalArgumentException("channel_id or channel_name is required");
             }
