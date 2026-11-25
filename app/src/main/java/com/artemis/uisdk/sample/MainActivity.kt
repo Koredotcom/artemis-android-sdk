@@ -36,7 +36,6 @@ class MainActivity : AppCompatActivity() {
     private var channelSecret = BuildConfig.ARTEMIS_SAMPLE_CHANNEL_SECRET
     private var verifiedUserId = BuildConfig.ARTEMIS_SAMPLE_VERIFIED_USER_ID
     private var customAttributesJson = BuildConfig.ARTEMIS_SAMPLE_CUSTOM_ATTRIBUTES_JSON
-    private var mintingInitialToken = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,23 +88,9 @@ class MainActivity : AppCompatActivity() {
             runCatchingConfig { initializeAndShow(apiKeyConnection()) }
             return
         }
-        if (mintingInitialToken) return
         val provider = runCatchingConfig { customerSessionProvider() } ?: return
-        // Like a real host app, mint the first bootstrap token before opening chat. The same provider is
-        // handed to the SDK, which uses it for every later init (network retry, token loss, new chat).
-        mintingInitialToken = true
-        Thread({
-            val initialToken = runCatching { provider.getToken() }
-            runOnUiThread {
-                mintingInitialToken = false
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                initialToken.onSuccess { token ->
-                    runCatchingConfig { initializeAndShow(hostedBootstrapConnection(token, provider)) }
-                }.onFailure {
-                    Toast.makeText(this, "Could not start a customer session: ${it.message}", Toast.LENGTH_LONG).show()
-                }
-            }
-        }, "SampleCustomerSession").start()
+        // The SDK calls the provider on its background thread for the first init and each later init.
+        runCatchingConfig { initializeAndShow(hostedBootstrapConnection(provider)) }
     }
 
     private fun initializeAndShow(connection: ArtemisConnectionConfig) {
@@ -116,7 +101,7 @@ class MainActivity : AppCompatActivity() {
                 contactCenter = true,
                 advancedFeedback = true,
                 authentication = true,
-                showAnsweredByAI = true,
+                showAnsweredByAI = false,
             ),
             session = ArtemisSessionConfig(endSessionOnClose = true),
             theme = ArtemisThemeConfig(primary = "#2563EB", mode = "system"),
@@ -190,16 +175,11 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    /**
-     * Hosted bootstrap: the bootstrap token owns channel and user context, so no API key or channel is
-     * passed. The SDK sends [initialToken] to its first init only; because bootstrap tokens are single
-     * use, every later init (after a network failure, SDK-token loss or "new chat") calls [provider].
-     */
-    private fun hostedBootstrapConnection(initialToken: String, provider: CustomerSessionBootstrapProvider) =
+    /** The SDK requests a fresh hosted bootstrap token for every init, starting with the first one. */
+    private fun hostedBootstrapConnection(provider: CustomerSessionBootstrapProvider) =
         ArtemisConnectionConfig(
             endpoint = endpoint.trim(),
             projectId = projectId.trim(),
-            bootstrapToken = initialToken,
             bootstrapTokenProvider = provider,
         )
 
