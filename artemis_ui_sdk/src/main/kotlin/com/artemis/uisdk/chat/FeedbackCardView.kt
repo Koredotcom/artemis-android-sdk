@@ -7,6 +7,9 @@ import android.graphics.drawable.GradientDrawable
 import android.text.Editable
 import android.text.InputFilter
 import android.text.TextWatcher
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.RelativeSizeSpan
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -17,6 +20,7 @@ import com.artemis.uisdk.ArtemisThemeConfig
 import com.artemis.uisdk.R
 import com.artemis.uisdk.artemisColor
 import com.google.gson.JsonObject
+import com.google.android.material.button.MaterialButton
 
 /** The view edits a retained draft; only explicit submission uses the feedback transport. */
 @SuppressLint("ViewConstructor") // Programmatic card requires a message and callbacks; never inflated from XML.
@@ -39,8 +43,8 @@ internal class FeedbackCardView(
     private var followText: EditText? = null
     private var shownQuestion: String? = null
     private val status = TextView(context).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE; setTextColor(context.artemisColor(theme, R.color.artemis_text)) }
-    private val submit = Button(context)
-    private val skip = Button(context)
+    private val submit = MaterialButton(context)
+    private val skip = MaterialButton(context)
     private val accent = context.artemisColor(theme, R.color.artemis_primary)
     private val foreground = runCatching { Color.parseColor(theme.primaryForeground) }.getOrDefault(
         if (androidx.core.graphics.ColorUtils.calculateLuminance(accent) > .5) Color.BLACK else Color.WHITE)
@@ -49,7 +53,7 @@ internal class FeedbackCardView(
         orientation = VERTICAL
         val model = template
         if (model == null) addView(label(text(R.string.artemis_feedback_unavailable))) else {
-            data.string("prompt")?.takeIf(String::isNotBlank)?.let { addView(label(it)) }
+            data.string("prompt")?.takeIf(String::isNotBlank)?.let { addView(label(it).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) }) }
             if (model.type != "text") ratings(this, model.ratings, model.type, model.emoji, primaryButtons) { score ->
                 if (locked()) return@ratings
                 draft = model.normalized(draft.copy(rating = score, followUpRating = null, followUpText = ""))
@@ -61,7 +65,11 @@ internal class FeedbackCardView(
                 refresh()
                 if (model.type == "thumbs" && !model.showComment(score) && model.followUpQuestion(score) == null) send(false)
             }
-            if (model.type != "text") commentGroup.addView(label(authored("comment_prompt", fallback = R.string.artemis_feedback_comment_prompt)))
+            if (model.type != "text") commentGroup.addView(label(authored("comment_prompt", fallback = R.string.artemis_feedback_comment_prompt)).apply {
+                textSize = 12f
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setTextColor(context.artemisColor(theme, R.color.artemis_muted))
+            })
             comments = field(authored("comment_placeholder", fallback = R.string.artemis_survey_comment), draft.comments) {
                 draft = draft.copy(comments = it); callbacks.onFeedbackDraft(message, data, draft)
                 refreshSubmit()
@@ -71,14 +79,14 @@ internal class FeedbackCardView(
             addView(followGroup)
             addView(status)
             submit.apply {
+                styleButton(this)
                 text = authored("submit_label", "submitLabel", fallback = R.string.artemis_submit)
-                isAllCaps = false
                 setOnClickListener { send(false) }
             }
             addView(submit)
             skip.apply {
+                styleButton(this)
                 text = text(R.string.artemis_feedback_rating_only)
-                isAllCaps = false
                 setOnClickListener { send(true) }
             }
             addView(skip)
@@ -89,16 +97,34 @@ internal class FeedbackCardView(
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun text(id: Int, vararg args: Any) = strings.text(context, id, *args)
     private fun authored(vararg keys: String, fallback: Int) = keys.firstNotNullOfOrNull { data.string(it)?.takeIf(String::isNotBlank) } ?: text(fallback)
+    private fun styleButton(button: MaterialButton) {
+        button.isAllCaps = false
+        button.textSize = 13f
+        button.minHeight = 0
+        button.insetTop = 0; button.insetBottom = 0
+        button.cornerRadius = dp(18)
+        button.strokeWidth = dp(1)
+        button.strokeColor = android.content.res.ColorStateList.valueOf(accent)
+        button.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.TRANSPARENT)
+        button.setTextColor(accent)
+        button.setPadding(dp(14), dp(7), dp(14), dp(7))
+    }
     private fun label(value: String) = TextView(context).apply {
-        text = value; textSize = 14f; setTextColor(context.artemisColor(theme, R.color.artemis_text))
+        text = value; textSize = 13f; setTextColor(context.artemisColor(theme, R.color.artemis_text))
         setPadding(0, dp(6), 0, dp(6))
     }
     private fun field(placeholder: String, value: String, changed: (String) -> Unit) = EditText(context).apply {
-        hint = placeholder; minLines = 2; maxLines = 5; textSize = 14f
+        hint = placeholder; minLines = 2; maxLines = 5; textSize = 13f
         inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
         filters = arrayOf(InputFilter.LengthFilter(5000))
         setTextColor(context.artemisColor(theme, R.color.artemis_text))
         setHintTextColor(context.artemisColor(theme, R.color.artemis_muted))
+        background = GradientDrawable().apply {
+            cornerRadius = dp(10).toFloat()
+            setColor(context.artemisColor(theme, R.color.artemis_background))
+            setStroke(dp(1), context.artemisColor(theme, R.color.artemis_border))
+        }
+        setPadding(dp(12), dp(10), dp(12), dp(10))
         setText(value)
         addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -116,12 +142,18 @@ internal class FeedbackCardView(
                 val caption = when {
                     type == "thumbs" -> if (score == 1) "👍" else "👎"
                     emoji && score in 1..5 -> "${listOf("😠", "🙁", "😐", "🙂", "😀")[score - 1]}\n${text(listOf(R.string.artemis_feedback_terrible, R.string.artemis_feedback_poor, R.string.artemis_feedback_okay, R.string.artemis_feedback_good, R.string.artemis_feedback_great)[score - 1])}"
-                    type == "star" -> "★ $score"
+                    type == "star" || type == "stars" -> "★"
                     else -> score.toString()
                 }
                 val button = Button(context).apply {
-                    text = caption; textSize = 12f; isAllCaps = false; minWidth = 0
-                    minHeight = dp(if (emoji) 56 else 40)
+                    text = if (emoji && caption.contains('\n')) SpannableString(caption).apply {
+                        val lineBreak = caption.indexOf('\n')
+                        setSpan(RelativeSizeSpan(1.5f), 0, lineBreak, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        setSpan(RelativeSizeSpan(.8f), lineBreak + 1, caption.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    } else caption
+                    textSize = if (type == "star" || type == "stars") 18f else 12f; isAllCaps = false; minWidth = 0
+                    gravity = android.view.Gravity.CENTER
+                    minHeight = dp(if (emoji) 48 else 38)
                     setPadding(dp(2), dp(4), dp(2), dp(4))
                     contentDescription = when {
                         type == "thumbs" -> text(if (score == 1) R.string.artemis_feedback_positive else R.string.artemis_feedback_negative)
@@ -131,22 +163,41 @@ internal class FeedbackCardView(
                     setOnClickListener { selected(score) }
                 }
                 buttons.add(score to button)
-                row.addView(button, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(3); bottomMargin = dp(3) })
+                row.addView(button, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(if (emoji) 4 else 8); bottomMargin = dp(if (emoji) 4 else 8) })
             }
         }
     }
     private fun locked() = response.status in setOf(FeedbackSubmissionStatus.PENDING, FeedbackSubmissionStatus.SUBMITTED, FeedbackSubmissionStatus.EXPIRED)
     private fun paint(buttons: List<Pair<Int, Button>>, selected: Int?) {
         buttons.forEach { (score, button) ->
-            val active = score == selected
+            val isStar = template?.type in setOf("star", "stars")
+            val isNps = template?.type == "scale" && (template?.ratings?.last ?: 0) - (template?.ratings?.first ?: 0) >= 8
+            val active = selected != null && if (isStar) score <= selected else score == selected
             button.isSelected = active
             button.isEnabled = !locked() && message.serverMessageId != null
+            button.alpha = if (button.isEnabled) 1f else .65f
+            val ratingColor = if (isNps) when {
+                score <= 6 -> Color.rgb(185, 28, 28)
+                score <= 8 -> Color.rgb(180, 83, 9)
+                else -> Color.rgb(21, 128, 61)
+            } else accent
             button.background = GradientDrawable().apply {
-                cornerRadius = dp(8).toFloat()
-                setColor(if (active) accent else context.artemisColor(theme, R.color.artemis_surface))
-                setStroke(dp(1).coerceAtLeast(1), if (active) accent else context.artemisColor(theme, R.color.artemis_border))
+                cornerRadius = dp(12).toFloat()
+                val fill = when {
+                    active && isNps -> ratingColor
+                    active -> androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_background), ratingColor, .14f)
+                    isNps -> androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_background), ratingColor, .1f)
+                    else -> context.artemisColor(theme, R.color.artemis_background)
+                }
+                setColor(fill)
+                setStroke(dp(1).coerceAtLeast(1), if (active || isNps) ratingColor else context.artemisColor(theme, R.color.artemis_border))
             }
-            button.setTextColor(if (active) foreground else context.artemisColor(theme, R.color.artemis_text))
+            button.setTextColor(when {
+                isStar && active -> Color.rgb(245, 158, 11)
+                isNps && active -> Color.WHITE
+                isNps -> ratingColor
+                else -> context.artemisColor(theme, R.color.artemis_text)
+            })
         }
     }
     private fun refresh() {
@@ -160,7 +211,11 @@ internal class FeedbackCardView(
             shownQuestion = question
             followGroup.removeAllViews(); followButtons.clear(); followText = null
             if (question != null) {
-                followGroup.addView(label(question))
+                followGroup.addView(label(question).apply {
+                    textSize = 12f
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    setTextColor(context.artemisColor(theme, R.color.artemis_muted))
+                })
                 if (model.followUpType == "text") {
                     followText = field(text(R.string.artemis_survey_comment), draft.followUpText) {
                         draft = draft.copy(followUpText = it); callbacks.onFeedbackDraft(message, data, draft)

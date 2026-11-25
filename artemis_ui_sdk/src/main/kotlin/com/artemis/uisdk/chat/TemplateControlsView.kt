@@ -10,17 +10,19 @@ import android.text.InputType
 import android.text.TextWatcher
 import android.view.View
 import android.widget.ArrayAdapter
-import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
+import com.google.android.material.button.MaterialButton
 import com.artemis.uisdk.ArtemisStrings
 import com.artemis.uisdk.ArtemisThemeConfig
 import com.artemis.uisdk.R
 import com.artemis.uisdk.artemisColor
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
 import java.util.Calendar
 import java.util.Locale
 
@@ -46,6 +48,7 @@ internal class TemplateControlsView(
     private val inputs = linkedMapOf<String, Pair<JsonObject, EditText>>()
     private val selections = linkedMapOf<String, Pair<JsonObject, Spinner>>()
     private val controls = mutableListOf<Pair<String, View>>()
+    private var actionGroupLocked = false
     private val error = TextView(context).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
     private val submitId = if (form) "form-submit" else payload.string("submit_id")?.takeIf(String::isNotBlank)
     private val fields = payload.array(if (form) "fields" else "elements")?.mapNotNull { it.takeIf { v -> v.isJsonObject }?.asJsonObject }.orEmpty()
@@ -53,9 +56,23 @@ internal class TemplateControlsView(
     private fun locked(id: String) = callbacks.isTemplateLocked(message, id, renderId) || (submitId != null && callbacks.isTemplateLocked(message, submitId, renderId))
     private fun draftChanged() = callbacks.onTemplateDraft(message, renderId, scope, signature, values.toMap())
     private fun label(value: String) = TextView(context).apply {
-        text = value; textSize = 14f; setTextColor(context.artemisColor(theme, R.color.artemis_text)); setPadding(0, dp(6), 0, dp(3))
+        text = value; textSize = 12f; setTextColor(context.artemisColor(theme, R.color.artemis_text)); setPadding(0, dp(6), 0, dp(3))
     }
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
+    private fun styleButton(button: MaterialButton, primaryAction: Boolean = false) {
+        val primary = context.artemisColor(theme, R.color.artemis_primary)
+        button.isAllCaps = false
+        button.textSize = 13f
+        button.minHeight = 0
+        button.insetTop = 0
+        button.insetBottom = 0
+        button.cornerRadius = dp(18)
+        button.strokeWidth = dp(1)
+        button.strokeColor = android.content.res.ColorStateList.valueOf(primary)
+        button.backgroundTintList = android.content.res.ColorStateList.valueOf(if (primaryAction) primary else android.graphics.Color.TRANSPARENT)
+        button.setTextColor(if (primaryAction) android.graphics.Color.WHITE else primary)
+        button.setPadding(dp(14), dp(7), dp(14), dp(7))
+    }
     private fun kind(field: JsonObject) = field.string("type") ?: if (form) "input" else "button"
     private fun options(field: JsonObject) = field.array("options")?.mapNotNull { it.takeIf { v -> v.isJsonObject }?.asJsonObject }.orEmpty()
 
@@ -67,11 +84,25 @@ internal class TemplateControlsView(
             kind(field) in allowed && (field.string("input_type") == null || field.string("input_type") in setOf("text", "number", "email", "date", "time", "tel", "phone")) && (kind(field) != "select" || (field.array("options")?.size() == options(field).size && options(field).size <= 200 && options(field).all { !it.string("id").isNullOrBlank() } && options(field).map { it.string("id") }.distinct().size == options(field).size))
         }
         if (!valid) { if (form || fields.isNotEmpty()) addView(label(text(R.string.artemis_template_fields_unavailable))) } else {
-            payload.string("title")?.let { addView(label(it)) }
+            payload.string("title")?.let { addView(label(it).apply { textSize = 14f; setTypeface(typeface, android.graphics.Typeface.BOLD) }) }
+            var actionButtonGroup: ChipGroup? = null
             fields.forEach { field ->
                 val id = field.string("id")!!
                 val fieldLabel = field.string("label") ?: id
-                if (kind(field) == "button") button(field, id, fieldLabel) else {
+                if (!form && kind(field) == "button") {
+                    val group = actionButtonGroup ?: ChipGroup(context).apply {
+                        chipSpacingHorizontal = dp(6)
+                        chipSpacingVertical = dp(6)
+                    }.also { createdGroup ->
+                        actionButtonGroup = createdGroup
+                        addView(createdGroup, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
+                    }
+                    actionChip(field, id, fieldLabel, group)
+                } else if (kind(field) == "button") {
+                    actionButtonGroup = null
+                    button(field, id, fieldLabel)
+                } else {
+                    actionButtonGroup = null
                     val title = label(if (field.flag("required")) text(R.string.artemis_template_required_label, fieldLabel) else fieldLabel)
                     addView(title)
                     val control = if (kind(field) == "select") select(field, id, fieldLabel) else input(field, id, fieldLabel)
@@ -84,9 +115,9 @@ internal class TemplateControlsView(
             }
             addView(error)
             if (submitId != null) {
-                val submit = Button(context).apply {
+                val submit = MaterialButton(context).apply {
+                    styleButton(this, primaryAction = true)
                     text = payload.string("submit_label") ?: text(R.string.artemis_submit)
-                    isAllCaps = false; setTextColor(context.artemisColor(theme, R.color.artemis_primary))
                     setOnClickListener {
                         if (locked(submitId) || !validate()) return@setOnClickListener
                         val data = values.filterKeys { key -> inputs.containsKey(key) || selections.containsKey(key) }
@@ -102,12 +133,14 @@ internal class TemplateControlsView(
 
     private fun button(field: JsonObject, id: String, title: String) {
         val url = resolveLink(field.string("url"))
-        val button = Button(context).apply {
-            text = title; isAllCaps = false; setTextColor(context.artemisColor(theme, R.color.artemis_primary))
+        val button = MaterialButton(context).apply {
+            styleButton(this)
+            text = title
             setOnClickListener {
                 if (url != null) { openLink(url); return@setOnClickListener }
-                if (locked(id)) return@setOnClickListener
+                if (actionGroupLocked || locked(id)) return@setOnClickListener
                 callbacks.onAction(message, id, TemplateContracts.actionValue(field), null, renderId)
+                if (!form) actionGroupLocked = true
                 applyLocks()
             }
         }
@@ -116,12 +149,41 @@ internal class TemplateControlsView(
         field.string("description")?.takeIf(String::isNotBlank)?.let { addView(label(it)) }
     }
 
+    private fun actionChip(field: JsonObject, id: String, title: String, group: ChipGroup) {
+        val url = resolveLink(field.string("url"))
+        val primary = context.artemisColor(theme, R.color.artemis_primary)
+        val chip = Chip(context).apply {
+            text = title
+            isCheckable = false
+            isClickable = true
+            textSize = 13f
+            chipMinHeight = dp(32).toFloat()
+            chipStartPadding = dp(14).toFloat()
+            chipEndPadding = dp(14).toFloat()
+            chipCornerRadius = dp(18).toFloat()
+            chipStrokeWidth = dp(1).toFloat()
+            chipStrokeColor = android.content.res.ColorStateList.valueOf(primary)
+            chipBackgroundColor = android.content.res.ColorStateList.valueOf(android.graphics.Color.TRANSPARENT)
+            setTextColor(primary)
+            setEnsureMinTouchTargetSize(false)
+            setOnClickListener {
+                if (url != null) { openLink(url); return@setOnClickListener }
+                if (actionGroupLocked || locked(id)) return@setOnClickListener
+                callbacks.onAction(message, id, TemplateContracts.actionValue(field), null, renderId)
+                actionGroupLocked = true
+                applyLocks()
+            }
+        }
+        controls.add(id to chip)
+        group.addView(chip)
+    }
+
     private fun input(field: JsonObject, id: String, title: String): EditText {
         val type = field.string("input_type") ?: kind(field)
         val initial = values[id] ?: field.string("value").orEmpty()
         values[id] = initial
         return EditText(context).apply {
-            setSingleLine(); textSize = 14f
+            setSingleLine(); textSize = 13f
             imeOptions = if (!form && submitId == null) android.view.inputmethod.EditorInfo.IME_ACTION_SEND else android.view.inputmethod.EditorInfo.IME_ACTION_NEXT
             hint = field.string("placeholder") ?: title
             filters = arrayOf(InputFilter.LengthFilter(10_000))
@@ -133,6 +195,13 @@ internal class TemplateControlsView(
             }
             setTextColor(context.artemisColor(theme, R.color.artemis_text))
             setHintTextColor(context.artemisColor(theme, R.color.artemis_muted))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                cornerRadius = dp(8).toFloat()
+                setColor(context.artemisColor(theme, R.color.artemis_background))
+                setStroke(dp(1), context.artemisColor(theme, R.color.artemis_border))
+            }
+            setPadding(dp(12), dp(8), dp(12), dp(8))
             setText(initial)
             values[id] = this.text.toString()
             inputs[id] = field to this
@@ -166,7 +235,11 @@ internal class TemplateControlsView(
             } else if (!form && submitId == null) setOnEditorActionListener { _, action, event ->
                 val enter = event?.keyCode == android.view.KeyEvent.KEYCODE_ENTER && event.action == android.view.KeyEvent.ACTION_DOWN
                 if (action == android.view.inputmethod.EditorInfo.IME_ACTION_SEND || action == android.view.inputmethod.EditorInfo.IME_ACTION_DONE || enter) {
-                    if (!locked(id) && validInput(field, this)) { callbacks.onAction(message, id, this.text.toString(), null, renderId); applyLocks() }
+                    if (!actionGroupLocked && !locked(id) && validInput(field, this)) {
+                        callbacks.onAction(message, id, this.text.toString(), null, renderId)
+                        if (!form && submitId == null) actionGroupLocked = true
+                        applyLocks()
+                    }
                     true
                 } else false
             }
@@ -181,6 +254,13 @@ internal class TemplateControlsView(
         val index = choices.indexOfFirst { it.string("id") == initial } + 1
         values[id] = choices.getOrNull(index - 1)?.string("id").orEmpty()
         return Spinner(context).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                cornerRadius = dp(8).toFloat()
+                setColor(context.artemisColor(theme, R.color.artemis_background))
+                setStroke(dp(1), context.artemisColor(theme, R.color.artemis_border))
+            }
+            setPadding(dp(8), 0, dp(8), 0)
             adapter = object : ArrayAdapter<String>(context, android.R.layout.simple_spinner_dropdown_item, labels) {
                 override fun isEnabled(position: Int) = position != 0
                 override fun getDropDownView(position: Int, convertView: View?, parent: android.view.ViewGroup): View =
@@ -199,8 +279,10 @@ internal class TemplateControlsView(
                     val value = choices.getOrNull(position - 1)?.string("id").orEmpty()
                     if (value == previous) return
                     previous = value; values[id] = value; draftChanged()
-                    if (!form && submitId == null && value.isNotEmpty() && !locked(id)) {
-                        callbacks.onAction(message, id, value, null, renderId); applyLocks()
+                    if (!form && submitId == null && value.isNotEmpty() && !actionGroupLocked && !locked(id)) {
+                        callbacks.onAction(message, id, value, null, renderId)
+                        actionGroupLocked = true
+                        applyLocks()
                     }
                 }
             }
@@ -208,8 +290,10 @@ internal class TemplateControlsView(
     }
 
     private fun submitPickedValue(field: JsonObject, id: String, input: EditText) {
-        if (!form && submitId == null && !locked(id) && validInput(field, input)) {
-            callbacks.onAction(message, id, input.text.toString(), null, renderId); applyLocks()
+        if (!form && submitId == null && !actionGroupLocked && !locked(id) && validInput(field, input)) {
+            callbacks.onAction(message, id, input.text.toString(), null, renderId)
+            actionGroupLocked = true
+            applyLocks()
         }
     }
     private fun validInput(field: JsonObject, input: EditText): Boolean {
@@ -230,5 +314,9 @@ internal class TemplateControlsView(
         }
         return true
     }
-    private fun applyLocks() { controls.forEach { (id, view) -> view.isEnabled = !locked(id) } }
+    private fun applyLocks() { controls.forEach { (id, view) ->
+        val enabled = !actionGroupLocked && !locked(id)
+        view.isEnabled = enabled
+        view.alpha = if (enabled) 1f else .5f
+    } }
 }

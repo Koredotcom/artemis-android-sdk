@@ -84,6 +84,11 @@
     <string name="artemis_template_media_unavailable">Image or media unavailable.</string>
     <string name="artemis_template_resume_audio">Resume audio</string>
     <string name="artemis_template_item_limit">Showing the first %1$d items on mobile.</string>
+    <string name="artemis_template_download">Download</string>
+    <string name="artemis_template_progress_label">Progress</string>
+    <string name="artemis_media_pause">Pause</string>
+    <string name="artemis_media_mute">Mute</string>
+    <string name="artemis_media_unmute">Unmute</string>
     <string name="artemis_auth_title">Service authorization</string>
     <string name="artemis_auth_replaced">This authorization request has been replaced.</string>
     <string name="artemis_auth_pending">Authorization needed</string>

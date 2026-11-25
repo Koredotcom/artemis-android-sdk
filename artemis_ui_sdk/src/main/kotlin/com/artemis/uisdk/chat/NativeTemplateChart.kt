@@ -20,12 +20,17 @@ internal data class TemplateChartPoint(val label: String, val value: Double, val
 internal class NativeTemplateChart(context: Context, private val type: String,
     private val points: List<TemplateChartPoint>, private val theme: ArtemisThemeConfig) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val palette = listOf(0xFF2563EB.toInt(), 0xFF10B981.toInt(), 0xFFF59E0B.toInt(), 0xFF8B5CF6.toInt(), 0xFFEC4899.toInt())
+    // Same series order as the web SDK chart: indigo, green, amber, red, then extra hues for longer series.
+    private val palette = listOf(
+        0xFF4F46E5.toInt(), 0xFF45956D.toInt(), 0xFFCA7C2F.toInt(), 0xFFCA3A31.toInt(),
+        0xFF8B5CF6.toInt(), 0xFF0EA5E9.toInt(), 0xFFEC4899.toInt(), 0xFF64748B.toInt(),
+    )
     private val pieBounds = RectF()
+    private val barBounds = RectF()
     private val linePath = Path()
     private val labelPaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = dp(10); textAlign = Paint.Align.CENTER }
     private var axisLabels = emptyList<String>()
-    private val pointColors = points.indices.map { index -> runCatching { Color.parseColor(points[index].color) }.getOrDefault(if (type == "pie") palette[index % palette.size] else context.artemisColor(theme, R.color.artemis_primary)) }
+    private val pointColors = points.indices.map { index -> runCatching { Color.parseColor(points[index].color) }.getOrDefault(palette[index % palette.size]) }
     private val sweeps = TemplateContracts.pieSweeps(points.map { it.value })
     private val magnitude = points.maxOf { abs(it.value) }.takeIf { it > 0 } ?: 1.0
     private val normalized = points.map { it.value / magnitude }
@@ -55,8 +60,11 @@ internal class NativeTemplateChart(context: Context, private val type: String,
         val left = dp(8); val right = width - dp(8); val top = dp(10); val bottom = height - dp(24)
         fun y(value: Double) = bottom - ((value - low) / range * (bottom - top)).toFloat()
         val zero = y(0.0)
-        paint.color = context.artemisColor(theme, R.color.artemis_border); paint.strokeWidth = dp(1)
-        canvas.drawLine(left, zero, right, zero, paint)
+        // Web draws no axis line; keep the zero line only when bars or points go below zero.
+        if (low < 0) {
+            paint.color = context.artemisColor(theme, R.color.artemis_border); paint.strokeWidth = dp(1)
+            canvas.drawLine(left, zero, right, zero, paint)
+        }
         val slot = (right - left) / points.size
         if (type == "line") {
             linePath.reset()
@@ -69,10 +77,12 @@ internal class NativeTemplateChart(context: Context, private val type: String,
             normalized.forEachIndexed { index, value -> paint.color = color(index); canvas.drawCircle(left + slot * (index + .5f), y(value), dp(3), paint) }
         } else normalized.forEachIndexed { index, value ->
             paint.color = color(index)
-            val inset = minOf(dp(4), slot * .2f)
-            canvas.drawRect(left + slot * index + inset, minOf(zero, y(value)), left + slot * (index + 1) - inset, maxOf(zero, y(value)), paint)
+            // Web bars: ~10% gap on each side of the slot and softly rounded corners.
+            val inset = slot * .1f
+            barBounds.set(left + slot * index + inset, minOf(zero, y(value)), left + slot * (index + 1) - inset, maxOf(zero, y(value)))
+            canvas.drawRoundRect(barBounds, dp(3), dp(3), paint)
         }
-        // The full native legend below contains every label/value; draw a compact axis for small series.
+        // Full labels and values are in contentDescription; draw a compact axis for small series.
         if (points.size <= 8) {
             labelPaint.color = context.artemisColor(theme, R.color.artemis_muted)
             axisLabels.forEachIndexed { index, caption -> canvas.drawText(caption, left + slot * (index + .5f), height - dp(5), labelPaint) }

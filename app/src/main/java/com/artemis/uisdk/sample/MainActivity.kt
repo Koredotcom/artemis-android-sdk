@@ -8,14 +8,12 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.res.ResourcesCompat
 import com.artemis.uisdk.ArtemisConnectionConfig
 import com.artemis.uisdk.ArtemisFeatureConfig
 import com.artemis.uisdk.ArtemisSessionConfig
 import com.artemis.uisdk.ArtemisThemeConfig
 import com.artemis.uisdk.ArtemisUI
 import com.artemis.uisdk.ArtemisUIConfig
-import com.artemis.uisdk.ArtemisTypographyConfig
 import com.artemis.uisdk.ArtemisUiHandle
 import com.artemis.uisdk.ChatOptions
 import com.google.gson.JsonParseException
@@ -105,9 +103,6 @@ class MainActivity : AppCompatActivity() {
             ),
             session = ArtemisSessionConfig(endSessionOnClose = true),
             theme = ArtemisThemeConfig(primary = "#2563EB", mode = "system"),
-            typography = ArtemisTypographyConfig(
-                typeface = ResourcesCompat.getFont(applicationContext, R.font.bukra),
-            ),
         )
         val handle = ArtemisUI.initialize(applicationContext, artemisUiConfiguration).also {
             artemisUiHandle = it

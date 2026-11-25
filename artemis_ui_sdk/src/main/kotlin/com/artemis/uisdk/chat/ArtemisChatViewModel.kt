@@ -601,7 +601,8 @@ class ArtemisChatViewModel internal constructor(
                 it.isJsonObject && it.asJsonObject.string("id") == actionIdentifier
             } == true
         }
-        val actionLockKey = renderIdentifier?.let { "render:$it" } ?: "$messageId:${if (isQuickReply) "quick_replies" else actionIdentifier}"
+        val isListAction = isListAction(sourceMessage, actionIdentifier)
+        val actionLockKey = renderIdentifier?.let { "render:$it" } ?: "$messageId:${when { isQuickReply -> "quick_replies"; isListAction -> "list"; else -> actionIdentifier }}"
         val displayLabel = if (formData == null) actionDisplayLabel(sourceMessage, actionIdentifier) else null
         val displayId = if (displayLabel != null) UUID.randomUUID().toString() else null
         val previousActivityState = mutableChatUiState.value
@@ -743,7 +744,8 @@ class ArtemisChatViewModel internal constructor(
     }
 
     fun isTemplateActionLocked(messageId: String, actionIdentifier: String, renderId: String?): Boolean =
-        (renderId != null && "render:$renderId" in lockedActionKeys) || isActionLocked(messageId, actionIdentifier)
+        (renderId != null && "render:$renderId" in lockedActionKeys) || isActionLocked(messageId, actionIdentifier) ||
+            (state.value.messages.find { it.messageId == messageId }?.let { isListAction(it, actionIdentifier) } == true && "$messageId:list" in lockedActionKeys)
 
     fun isActionLocked(messageId: String, actionIdentifier: String) =
         (actionIdentifier == "feedback" && feedbackMessage(messageId)?.feedbackResponses?.values?.any {
@@ -758,6 +760,12 @@ class ArtemisChatViewModel internal constructor(
             it.takeIf { entry -> entry.isJsonObject && entry.asJsonObject.string("name") == name }?.asJsonObject?.get("payload")
         }
 
+    private fun isListAction(message: ChatMessage, id: String): Boolean = templatePayloads(message, "list").any { payload ->
+        payload.takeIf { it.isJsonObject }?.asJsonObject?.array("items")?.any { item ->
+            item.isJsonObject && item.asJsonObject.string("id") == id
+        } == true
+    }
+
     private fun actionDisplayLabel(message: ChatMessage?, id: String): String? {
         message ?: return null
         val quickReply = templatePayloads(message, "quick_replies").flatMap { it.takeIf { value -> value.isJsonArray }?.asJsonArray?.toList().orEmpty() }
@@ -766,7 +774,10 @@ class ArtemisChatViewModel internal constructor(
             templatePayloads(message, "carousel").flatMap { it.takeIf { value -> value.isJsonObject }?.asJsonObject?.array("cards")?.toList().orEmpty() }
                 .flatMap { it.takeIf { value -> value.isJsonObject }?.asJsonObject?.array("buttons")?.toList().orEmpty() }
         val button = buttons.firstOrNull { it.isJsonObject && it.asJsonObject.string("id") == id }?.asJsonObject
-        return (quickReply ?: button)?.string("label")?.replace(Regex("[\\u202A-\\u202E\\u2066-\\u2069]"), "")?.trim()?.take(500)?.takeIf(String::isNotBlank)
+        val listItem = templatePayloads(message, "list").flatMap { it.takeIf { value -> value.isJsonObject }?.asJsonObject?.array("items")?.toList().orEmpty() }
+            .firstOrNull { it.isJsonObject && it.asJsonObject.string("id") == id }?.asJsonObject
+        return ((quickReply ?: button)?.string("label") ?: listItem?.string("title"))
+            ?.replace(Regex("[\\u202A-\\u202E\\u2066-\\u2069]"), "")?.trim()?.take(500)?.takeIf(String::isNotBlank)
     }
 
     fun retry() {
@@ -885,9 +896,18 @@ class ArtemisChatViewModel internal constructor(
     private fun parseFrame(payload: String) {
         val frame = ChatFrameParser.parse(payload)
         if (BuildConfig.DEBUG) {
-            Log.d("ArtemisSocket", "Inbound frame parsed=${frame != null}")
+            Log.d("ArtemisSocket", "Inbound frame type=${frame?.javaClass?.simpleName ?: "unknown"} parsed=${frame != null}")
         }
         frame ?: return
+        if (BuildConfig.DEBUG) {
+            when (frame) {
+                is ChatFrame.Start -> Log.d("ArtemisUI", "Bot response started messageId=${frame.id}")
+                is ChatFrame.Chunk -> Log.d("ArtemisUI", "Bot response chunk messageId=${frame.id} chars=${frame.text.length}")
+                is ChatFrame.End -> Log.d("ArtemisUI", "Bot response received messageId=${frame.message.messageId} text=${frame.message.text} richContent=${frame.message.richContent} actions=${frame.message.actions}")
+                is ChatFrame.Error -> Log.w("ArtemisUI", "Runtime error code=${frame.code ?: "unknown"} message=${frame.text}")
+                else -> Unit
+            }
+        }
         if (frame is ChatFrame.Transfer) {
             if (seenAgentTransferDeliverySessionId != frame.sessionId) {
                 seenAgentTransferDeliverySessionId = frame.sessionId

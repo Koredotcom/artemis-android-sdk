@@ -80,7 +80,7 @@ public final class ArtemisSocketClient {
 
     private static Executor androidCallbacks() {
         Handler handler = new Handler(Looper.getMainLooper());
-        return task -> handler.post(task);
+        return handler::post;
     }
 
     public synchronized void connect() {
