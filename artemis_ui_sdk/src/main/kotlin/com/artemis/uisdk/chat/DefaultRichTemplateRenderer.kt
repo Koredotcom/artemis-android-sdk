@@ -521,57 +521,82 @@ internal class DefaultRichTemplateRenderer(
         if (!safeUrl(url)) {
             parent.addView(blockedMediaPlaceholder(context, data.string("alt"))); return
         }
-        val videoPlayerView = VideoView(context)
+        // Web parity: a black 16:9 player that shows the first frame, with an always-visible
+        // control overlay (play/pause, time, volume, progress) instead of a separate play button.
         val mediaFrame = object : android.widget.FrameLayout(context) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                 val width = View.MeasureSpec.getSize(widthMeasureSpec)
-                val height = context.densityIndependentPixelsToPixels(9) * width / context.densityIndependentPixelsToPixels(16)
-                super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
+                super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(width * 9 / 16, View.MeasureSpec.EXACTLY))
             }
         }.apply {
-            background = cardBackground(context, context.artemisColor(theme, R.color.artemis_surface), 14, context.artemisColor(theme, R.color.artemis_border))
+            background = cardBackground(context, Color.BLACK, 14, Color.BLACK)
             clipToOutline = true
         }
-        mediaFrame.addView(videoPlayerView, android.widget.FrameLayout.LayoutParams(-1, -1))
-        val poster = ImageView(context).apply {
-            contentDescription = data.string("alt") ?: data.string("caption")
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            background = cardBackground(context, context.artemisColor(theme, R.color.artemis_surface), 14, context.artemisColor(theme, R.color.artemis_border))
-            data.string("thumbnail_url")?.let(::imageUrl)?.let { source -> loadImage(source) { bitmap -> if (bitmap != null) setImageBitmap(bitmap) else visibility = View.GONE } }
+        val videoPlayerView = VideoView(context).apply { contentDescription = data.string("alt") ?: data.string("caption") }
+        mediaFrame.addView(videoPlayerView, android.widget.FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+        val poster = data.string("thumbnail_url")?.let(::imageUrl)?.let { source ->
+            ImageView(context).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                loadImage(source) { bitmap -> if (bitmap != null) setImageBitmap(bitmap) else visibility = View.GONE }
+            }.also { mediaFrame.addView(it, android.widget.FrameLayout.LayoutParams(-1, -1)) }
         }
-        mediaFrame.addView(poster, android.widget.FrameLayout.LayoutParams(-1, -1))
-        val playButton = TextView(context).apply {
-            text = "▶"
-            textSize = 18f
-            gravity = Gravity.CENTER
-            contentDescription = label(context, R.string.play_video)
-            setTextColor(color(theme.primaryForeground, android.graphics.Color.WHITE))
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(color(theme.primary, context.artemisColor(theme, R.color.artemis_primary)))
-            }
-            setOnClickListener {
-                videoPlayerView.setVideoURI(url.toUri())
-                videoPlayerView.start()
-            }
+        var loaded = false
+        var startWhenPrepared = false
+        var mediaPlayer: MediaPlayer? = null
+        val playback = object : TemplatePlayback {
+            override val isPlaying get() = videoPlayerView.isPlaying
+            override val currentPosition get() = videoPlayerView.currentPosition
+            override val duration get() = videoPlayerView.duration
+            override fun start() { poster?.visibility = View.GONE; videoPlayerView.start() }
+            override fun pause() = videoPlayerView.pause()
+            override fun seekTo(positionMs: Int) = videoPlayerView.seekTo(positionMs)
+            override fun setVolume(volume: Float) { mediaPlayer?.let { runCatching { it.setVolume(volume, volume) } } }
         }
-        mediaFrame.addView(playButton, android.widget.FrameLayout.LayoutParams(
-            context.densityIndependentPixelsToPixels(48), context.densityIndependentPixelsToPixels(48), Gravity.CENTER))
-        videoPlayerView.setOnPreparedListener { player -> player.isLooping = false; poster.visibility = View.GONE; playButton.visibility = View.GONE }
-        videoPlayerView.setMediaController(android.widget.MediaController(context).apply { setAnchorView(videoPlayerView) })
-        videoPlayerView.contentDescription = data.string("alt") ?: data.string("caption")
+        lateinit var controls: TemplateMediaControls
+        fun load() { loaded = true; videoPlayerView.setVideoURI(url.toUri()) }
+        controls = TemplateMediaControls(context, Color.WHITE, androidx.core.graphics.ColorUtils.setAlphaComponent(Color.WHITE, 90), R.string.play_video) {
+            startWhenPrepared = true
+            if (!loaded) load()
+        }
+        controls.trailingVolumeOnly()
+        val overlay = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(context.densityIndependentPixelsToPixels(12), context.densityIndependentPixelsToPixels(20), context.densityIndependentPixelsToPixels(12), context.densityIndependentPixelsToPixels(8))
+            background = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.BOTTOM_TOP,
+                intArrayOf(androidx.core.graphics.ColorUtils.setAlphaComponent(Color.BLACK, 170), Color.TRANSPARENT),
+            )
+            addView(controls, LinearLayout.LayoutParams(-1, -2))
+            addView(controls.seekBar, LinearLayout.LayoutParams(-1, -2).apply { topMargin = context.densityIndependentPixelsToPixels(4) })
+        }
+        mediaFrame.addView(overlay, android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+        videoPlayerView.setOnPreparedListener { player ->
+            player.isLooping = false
+            mediaPlayer = player
+            controls.attach(playback)
+            controls.setDuration(player.duration)
+            if (startWhenPrepared) {
+                startWhenPrepared = false
+                playback.start()
+                controls.onStarted()
+            } else if (poster == null) videoPlayerView.seekTo(1) // Shows the first frame, like the web preview.
+        }
+        videoPlayerView.setOnCompletionListener { controls.onCompleted() }
+        videoPlayerView.setOnErrorListener { _, _, _ ->
+            loaded = false; startWhenPrepared = false; mediaPlayer = null
+            controls.detach(); poster?.visibility = View.VISIBLE; true
+        }
         val previousRelease = holder.onMediaReleased
-        holder.onMediaReleased = { previousRelease?.invoke(); poster.visibility = View.VISIBLE; playButton.visibility = View.VISIBLE }
+        holder.onMediaReleased = {
+            previousRelease?.invoke()
+            loaded = false; startWhenPrepared = false; mediaPlayer = null
+            controls.detach(); poster?.visibility = View.VISIBLE
+        }
         holder.videoViews.add(videoPlayerView)
         parent.addView(mediaFrame, LinearLayout.LayoutParams(-1, -2))
-        data.string("caption")?.let { caption ->
-            parent.addView(TextView(context).apply {
-                text = caption
-                textSize = 12f
-                setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
-                setPadding(0, context.densityIndependentPixelsToPixels(8), 0, 0)
-            })
-        }
+        load()
+        mediaCaption(context, parent, data.string("caption"))
     }
 
     private fun audio(
@@ -582,50 +607,66 @@ internal class DefaultRichTemplateRenderer(
     ) {
         val url = navigationUrl(data.string("url")) ?: run { parent.addView(blockedMediaPlaceholder(context, data.string("alt"))); return }
         if (!safeUrl(url)) { parent.addView(blockedMediaPlaceholder(context, data.string("alt"))); return }
-        val button = templateButton(context, parent).apply {
-            text = label(context, R.string.play_audio)
-            contentDescription = data.string("alt") ?: data.string("caption") ?: text
-        }
+        // Web parity: a rounded pill player with play/pause, time, seek bar and volume.
+        val textColor = color(theme.text, context.artemisColor(theme, R.color.artemis_text))
+        val pillColor = androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_background), textColor, .05f)
         var ownedPlayer: MediaPlayer? = null
-        val previousRelease = messageViewHolder.onMediaReleased
-        messageViewHolder.onMediaReleased = { previousRelease?.invoke(); ownedPlayer = null; button.text = label(context, R.string.play_audio); button.isEnabled = true }
-        button.setOnClickListener {
-            if (!safeUrl(url)) {
-                button.text = label(context, R.string.invalid_audio_link); return@setOnClickListener
-            }
-            val current = messageViewHolder.mediaPlayer
-            if (current != null && current === ownedPlayer) {
-                if (current.isPlaying) { current.pause(); button.text = label(context, R.string.artemis_template_resume_audio) }
-                else { current.start(); button.text = label(context, R.string.playing_audio) }
-                return@setOnClickListener
-            }
+        lateinit var controls: TemplateMediaControls
+        fun playbackOf(player: MediaPlayer) = object : TemplatePlayback {
+            override val isPlaying get() = player.isPlaying
+            override val currentPosition get() = player.currentPosition
+            override val duration get() = player.duration
+            override fun start() = player.start()
+            override fun pause() = player.pause()
+            override fun seekTo(positionMs: Int) = player.seekTo(positionMs)
+            override fun setVolume(volume: Float) = player.setVolume(volume, volume)
+        }
+        controls = TemplateMediaControls(context, textColor, androidx.core.graphics.ColorUtils.setAlphaComponent(textColor, 60), R.string.play_audio) {
             runCatching {
                 messageViewHolder.releaseMediaPlayer()
-                val mediaPlayer = MediaPlayer(); messageViewHolder.mediaPlayer = mediaPlayer; ownedPlayer = mediaPlayer; button.isEnabled = false
-                mediaPlayer.setDataSource(url); mediaPlayer.setOnPreparedListener { preparedMediaPlayer ->
-                if (messageViewHolder.mediaPlayer !== preparedMediaPlayer) return@setOnPreparedListener
-                preparedMediaPlayer.start(); button.isEnabled = true; button.text =
-                label(context, R.string.playing_audio)
-            }
-                mediaPlayer.setOnCompletionListener {
-                    button.text =
-                        label(context, R.string.play_audio)
+                val mediaPlayer = MediaPlayer(); messageViewHolder.mediaPlayer = mediaPlayer; ownedPlayer = mediaPlayer
+                mediaPlayer.setDataSource(url)
+                mediaPlayer.setOnPreparedListener { prepared ->
+                    if (messageViewHolder.mediaPlayer !== prepared) return@setOnPreparedListener
+                    controls.attach(playbackOf(prepared))
+                    controls.setDuration(prepared.duration)
+                    prepared.start(); controls.onStarted()
                 }
-                mediaPlayer.setOnErrorListener { _, _, _ ->
-                    button.isEnabled = true; ownedPlayer = null; button.text = label(context, R.string.audio_unavailable); true
-                }
+                mediaPlayer.setOnCompletionListener { controls.onCompleted() }
+                mediaPlayer.setOnErrorListener { _, _, _ -> ownedPlayer = null; controls.detach(); true }
                 mediaPlayer.prepareAsync()
-            }.onFailure { button.isEnabled = true; ownedPlayer = null; button.text = label(context, R.string.audio_unavailable) }
+            }.onFailure { ownedPlayer = null; controls.detach() }
+        }.apply {
+            inlineSeekBar()
+            contentDescription = data.string("alt") ?: data.string("caption")
+            setPadding(context.densityIndependentPixelsToPixels(12), context.densityIndependentPixelsToPixels(8), context.densityIndependentPixelsToPixels(8), context.densityIndependentPixelsToPixels(8))
+            background = cardBackground(context, pillColor, 28, pillColor)
         }
-        parent.addView(button, LinearLayout.LayoutParams(-1, -2))
-        data.readString("caption")?.let { caption ->
-            parent.addView(TextView(context).apply {
-                text = caption
-                textSize = 12f
-                setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
-                setPadding(0, context.densityIndependentPixelsToPixels(8), 0, 0)
-            })
-        }
+        val previousRelease = messageViewHolder.onMediaReleased
+        messageViewHolder.onMediaReleased = { previousRelease?.invoke(); ownedPlayer = null; controls.detach() }
+        parent.addView(controls, LinearLayout.LayoutParams(-1, -2))
+        // Web shows the total length before playback; read it from the stream header off the main thread.
+        audioDurations[url]?.let(controls::setDuration) ?: Thread {
+            val duration = runCatching {
+                android.media.MediaMetadataRetriever().run {
+                    try { setDataSource(url, emptyMap()); extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toIntOrNull() }
+                    finally { release() }
+                }
+            }.getOrNull() ?: return@Thread
+            audioDurations[url] = duration
+            controls.post { controls.setDuration(duration) }
+        }.start()
+        mediaCaption(context, parent, data.readString("caption"))
+    }
+
+    private fun mediaCaption(context: Context, parent: LinearLayout, caption: String?) {
+        caption?.takeIf(String::isNotBlank) ?: return
+        parent.addView(TextView(context).apply {
+            text = caption
+            textSize = 13f
+            setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
+            setPadding(0, context.densityIndependentPixelsToPixels(8), 0, context.densityIndependentPixelsToPixels(4))
+        })
     }
 
     private fun file(context: Context, parent: LinearLayout, data: JsonObject) {
@@ -843,8 +884,10 @@ internal class DefaultRichTemplateRenderer(
                         movementMethod = if (data.flag("markdown_cells")) LinkMovementMethod.getInstance() else null
                         gravity = when (columns[columnIndex].string("align")) { "right" -> Gravity.RIGHT; "center" -> Gravity.CENTER; else -> Gravity.LEFT }
                         textSize = if (isHeaderRow) 11f else 12f
+                        includeFontPadding = false
+                        setLineSpacing(0f, 1.15f)
                         setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
-                        setPadding(context.densityIndependentPixelsToPixels(12), context.densityIndependentPixelsToPixels(10), context.densityIndependentPixelsToPixels(12), context.densityIndependentPixelsToPixels(10))
+                        setPadding(context.densityIndependentPixelsToPixels(8), context.densityIndependentPixelsToPixels(6), context.densityIndependentPixelsToPixels(8), context.densityIndependentPixelsToPixels(6))
                         minWidth = context.densityIndependentPixelsToPixels(64)
                         breakStrategy = LineBreaker.BREAK_STRATEGY_HIGH_QUALITY
                         if (isHeaderRow) {
@@ -882,13 +925,13 @@ internal class DefaultRichTemplateRenderer(
                     setTextColor(color(theme.primary, context.artemisColor(theme, R.color.artemis_primary)))
                     isClickable = true
                     isFocusable = true
-                    setPadding(0, context.densityIndependentPixelsToPixels(10), 0, context.densityIndependentPixelsToPixels(2))
+                    setPadding(0, 0, 0, 0)
                     setOnClickListener {
                         showAllRows = !showAllRows
                         message?.let { callbacks.onTemplateDraft(it, renderId, tableScope, data, mapOf("expanded" to showAllRows.toString())) }
                         drawTableRows()
                     }
-                }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = context.densityIndependentPixelsToPixels(12); rightMargin = context.densityIndependentPixelsToPixels(12) })
+                }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = context.densityIndependentPixelsToPixels(8) })
             }
         }
         drawTableRows()
@@ -1270,6 +1313,8 @@ internal class DefaultRichTemplateRenderer(
                 setStroke(context.densityIndependentPixelsToPixels(1), context.artemisColor(theme, R.color.artemis_border), context.densityIndependentPixelsToPixels(6).toFloat(), context.densityIndependentPixelsToPixels(4).toFloat())
             }
         }
+
+    private val audioDurations = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
     private fun createMatchParentWrapContentLayoutParams(context: Context) =
         LinearLayout.LayoutParams(
