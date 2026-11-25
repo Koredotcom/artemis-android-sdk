@@ -1,6 +1,8 @@
 <com.google.android.material.button.MaterialButton xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-    android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp"
-    android:layout_marginTop="4dp" android:textAllCaps="false" android:textSize="14sp"
-    app:cornerRadius="12dp" app:strokeColor="@color/artemis_border" />
+    android:layout_width="wrap_content" android:layout_height="wrap_content" android:minHeight="0dp"
+    android:paddingLeft="14dp" android:paddingTop="7dp" android:paddingRight="14dp" android:paddingBottom="7dp"
+    android:textAllCaps="false" android:textSize="13sp"
+    android:insetTop="0dp" android:insetBottom="0dp" android:insetLeft="0dp" android:insetRight="0dp"
+    app:cornerRadius="18dp" app:strokeColor="@color/artemis_primary" app:strokeWidth="1dp" />

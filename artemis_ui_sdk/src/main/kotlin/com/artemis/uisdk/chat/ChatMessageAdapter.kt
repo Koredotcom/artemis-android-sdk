@@ -262,8 +262,8 @@ internal class ChatMessageAdapter(
                     context.getColor(com.artemis.uisdk.R.color.artemis_text)
                 )
             )
-            textSize = if (isUserMessage) 14f else 16f
-            setLineSpacing(0f, 1.25f)
+            textSize = 14f
+            setLineSpacing(0f, 1f)
             text = linkedMessageText
             movementMethod = if (markdownText || features.linkifyPhoneNumbers) LinkMovementMethod.getInstance() else null
             setLinkTextColor(
@@ -277,15 +277,16 @@ internal class ChatMessageAdapter(
         val containsRichContent =
             message.richContent != null || message.actions != null || message.renderables != null ||
                     message.attachments.isNotEmpty() || message.agentLink != null || message.transferSurvey != null || features.authentication && message.authorization != null
-        val isStandaloneRichTemplate =
-            containsRichContent && displayedMessageText.isBlank() && !isUserMessage &&
-                    !TemplateContracts.hasPreferredText(message)
-        if (isStandaloneRichTemplate) messageBubble.background = null
+        val isStandaloneActionSet =
+            message.actions != null && message.richContent == null && message.renderables == null &&
+                message.attachments.isEmpty() && message.agentLink == null && message.transferSurvey == null &&
+                !(features.authentication && message.authorization != null) && displayedMessageText.isBlank() && !isUserMessage
+        if (isStandaloneActionSet) messageBubble.background = null
         messageBubble.setPadding(
-            if (isStandaloneRichTemplate) 0 else (12 * context.resources.displayMetrics.density).toInt(),
-            if (isStandaloneRichTemplate) 0 else (12 * context.resources.displayMetrics.density).toInt(),
-            if (isStandaloneRichTemplate) 0 else (12 * context.resources.displayMetrics.density).toInt(),
-            if (isStandaloneRichTemplate) 0 else (12 * context.resources.displayMetrics.density).toInt(),
+            if (isStandaloneActionSet) 0 else (12 * context.resources.displayMetrics.density).toInt(),
+            if (isStandaloneActionSet) 0 else (12 * context.resources.displayMetrics.density).toInt(),
+            if (isStandaloneActionSet) 0 else (12 * context.resources.displayMetrics.density).toInt(),
+            if (isStandaloneActionSet) 0 else (12 * context.resources.displayMetrics.density).toInt(),
         )
         // Web parity (`.message.system`): a plain-text system line (transfer status, notices) is
         // centered muted text without a bubble. System cards such as authorization keep their layout.

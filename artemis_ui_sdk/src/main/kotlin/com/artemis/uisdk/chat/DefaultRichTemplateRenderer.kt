@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.text.LineBreaker
 import android.media.MediaPlayer
 import android.text.Html
 import android.text.Spanned
@@ -17,6 +18,7 @@ import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.LinearLayout.SHOW_DIVIDER_MIDDLE
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.VideoView
@@ -199,17 +201,27 @@ internal class DefaultRichTemplateRenderer(
             if (custom(context, message, parent, templateType, templatePayload)) continue
 
             val templateTitle = templateType.replace('_', ' ').replaceFirstChar { it.uppercase() }
-            val templateContainer =
-                if (templateType == "markdown" || templateType == "quick_replies") LinearLayout(context).apply { orientation = LinearLayout.VERTICAL } else
-                    (android.view.LayoutInflater.from(context)
-                        .inflate(R.layout.artemis_template_card, parent, false) as LinearLayout)
-            if (templateContainer !== parent) {
-                (templateContainer.background?.mutate() as? android.graphics.drawable.GradientDrawable)?.let { background ->
-                    background.setColor(context.artemisColor(theme, R.color.artemis_surface))
-                    background.setStroke(
-                        context.densityIndependentPixelsToPixels(1),
-                        context.artemisColor(theme, R.color.artemis_border)
-                    )
+            val templateContainer = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    if (templateType !in setOf("markdown", "html", "deep_link")) {
+                        topMargin = context.densityIndependentPixelsToPixels(8)
+                    }
+                }
+                if (templateType in setOf("form", "feedback")) {
+                    background = cardBackground(context,
+                        androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_background), context.artemisColor(theme, R.color.artemis_surface), .08f),
+                        16, context.artemisColor(theme, R.color.artemis_border))
+                    val inset = context.densityIndependentPixelsToPixels(16)
+                    setPadding(inset, inset, inset, inset)
+                } else if (templateType == "chart") {
+                    background = cardBackground(context,
+                        androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_background), context.artemisColor(theme, R.color.artemis_surface), .1f),
+                        16, context.artemisColor(theme, R.color.artemis_border))
+                    setPadding(context.densityIndependentPixelsToPixels(16), context.densityIndependentPixelsToPixels(14), context.densityIndependentPixelsToPixels(16), context.densityIndependentPixelsToPixels(14))
                 }
             }
             runCatching {
@@ -259,7 +271,7 @@ internal class DefaultRichTemplateRenderer(
                     )
 
                     "file" -> file(context, templateContainer, templatePayload.asJsonObject)
-                    "list" -> renderList(context, templateContainer, templatePayload.asJsonObject)
+                    "list" -> renderList(context, message, templateContainer, templatePayload.asJsonObject)
                     "kpi" -> kpi(context, templateContainer, templatePayload.asJsonObject)
                     "table" -> table(context, templateContainer, templatePayload.asJsonObject, message)
                     "chart" -> chart(context, templateContainer, templatePayload.asJsonObject)
@@ -310,6 +322,12 @@ internal class DefaultRichTemplateRenderer(
     ) {
         val controls = TemplateControlsView(context, message, actions, false, theme,
             handle?.presentation?.value?.strings ?: com.artemis.uisdk.ArtemisStrings(), callbacks, ::navigationUrl) { openActionUrl(context, it) }
+        controls.getChildAt(0)?.let { first ->
+            (first.layoutParams as? LinearLayout.LayoutParams)?.let { params ->
+                params.topMargin += context.densityIndependentPixelsToPixels(8)
+                first.layoutParams = params
+            }
+        }
         while (controls.childCount > 0) {
             val child = controls.getChildAt(0); controls.removeViewAt(0)
             child.tag = NativeTemplateDraftOwner
@@ -326,7 +344,8 @@ internal class DefaultRichTemplateRenderer(
         actionValue: String?,
         renderIdentifier: String?,
         url: String? = null,
-        onClick: (() -> Unit)? = null
+        onClick: (() -> Unit)? = null,
+        fullWidth: Boolean = false,
     ) {
         val actionButtonView = templateButton(context, parent).apply {
             text = actionLabel
@@ -339,9 +358,16 @@ internal class DefaultRichTemplateRenderer(
             else {
                 actionButtonView.isEnabled = false
                 callbacks.onAction(message, actionIdentifier, actionValue, null, renderIdentifier)
+                parent.children().forEach { sibling ->
+                    if (sibling !== actionButtonView) sibling.isEnabled = false
+                    sibling.alpha = .5f
+                }
             }
         }
-        parent.addView(actionButtonView, createMatchParentWrapContentLayoutParams(context))
+        parent.addView(actionButtonView, LinearLayout.LayoutParams(
+            if (fullWidth) ViewGroup.LayoutParams.MATCH_PARENT else ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply { topMargin = context.densityIndependentPixelsToPixels(4) })
     }
 
     private fun carousel(
@@ -356,47 +382,78 @@ internal class DefaultRichTemplateRenderer(
                 .forEach { addText(context, parent, it.readString("title").orEmpty()) }; return
         }
         if (cards.size() > 50) addText(context, parent, label(context, R.string.artemis_template_item_limit, 50))
-        val scroll = HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled = false }
-        val strip = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        val scroll = HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+        }
+        val strip = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, context.densityIndependentPixelsToPixels(4), 0, context.densityIndependentPixelsToPixels(4))
+        }
         for (card in cards.objects().take(50)) {
-            val carouselCardLayout = android.view.LayoutInflater.from(context)
-                .inflate(R.layout.artemis_template_card, strip, false) as LinearLayout
-            addText(context, carouselCardLayout, card.readString("title").orEmpty(), bold = true)
-            card.readString("subtitle")
-                ?.let { subtitle -> addText(context, carouselCardLayout, subtitle) }
-            card.readString("image_url")?.let { imageUrl ->
-                image(
-                    context,
-                    carouselCardLayout,
-                    JsonObject().apply { addProperty("url", imageUrl) })
+            val carouselCardLayout = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                background = cardBackground(context, context.artemisColor(theme, R.color.artemis_background), 12, context.artemisColor(theme, R.color.artemis_border))
+                clipToOutline = true
             }
+            card.string("image_url")?.let(::imageUrl)?.let { source ->
+                val imageView = ImageView(context).apply {
+                    contentDescription = card.string("title")
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    adjustViewBounds = false
+                }
+                loadImage(source) { bitmap -> if (bitmap != null) imageView.setImageBitmap(bitmap) else imageView.visibility = View.GONE }
+                carouselCardLayout.addView(imageView, LinearLayout.LayoutParams(-1, context.densityIndependentPixelsToPixels(120)))
+            }
+            val body = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(context.densityIndependentPixelsToPixels(12), context.densityIndependentPixelsToPixels(10), context.densityIndependentPixelsToPixels(12), context.densityIndependentPixelsToPixels(10))
+            }
+            body.addView(TextView(context).apply {
+                text = card.string("title").orEmpty()
+                textSize = 13f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
+                setPadding(0, 0, 0, context.densityIndependentPixelsToPixels(2))
+            })
+            card.string("subtitle")?.takeIf(String::isNotBlank)?.let { subtitle ->
+                body.addView(TextView(context).apply {
+                    text = subtitle
+                    textSize = 12f
+                    setLineSpacing(0f, 1.5f)
+                    setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
+                    setPadding(0, context.densityIndependentPixelsToPixels(2), 0, context.densityIndependentPixelsToPixels(6))
+                })
+            }
+            val buttonGroup = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
             card.readArray("buttons").objects().forEach { button ->
                 val actionIdentifier = button.readString("id") ?: return@forEach
                 actionButton(
                     context,
                     message,
-                    carouselCardLayout,
+                    buttonGroup,
                     actionIdentifier,
                     button.readString("label") ?: actionIdentifier,
                     TemplateContracts.actionValue(button),
                     data.string("actionRenderId", "renderId") ?: message.actions?.string("renderId"),
-                    url = button.readString("url")
+                    url = button.readString("url"),
+                    fullWidth = false,
                 )
             }
+            if (buttonGroup.childCount > 0) body.addView(buttonGroup)
+            carouselCardLayout.addView(body)
             card.readString("default_action_url")?.let { actionUrl ->
                 carouselCardLayout.setOnClickListener { openUrl(context, actionUrl) }
             }
             strip.addView(
                 carouselCardLayout,
                 LinearLayout.LayoutParams(
-                    context.densityIndependentPixelsToPixels(260),
+                    context.densityIndependentPixelsToPixels(200),
                     ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { marginEnd = context.densityIndependentPixelsToPixels(8) })
+                ).apply { marginEnd = context.densityIndependentPixelsToPixels(10) })
         }
-        scroll.addView(strip); parent.addView(
-            scroll,
-            createMatchParentWrapContentLayoutParams(context)
-        )
+        scroll.addView(strip)
+        parent.addView(scroll, LinearLayout.LayoutParams(-1, -2))
     }
 
     private fun smallImage(context: Context, url: String?, size: Int, description: String? = null): ImageView? {
@@ -411,23 +468,33 @@ internal class DefaultRichTemplateRenderer(
     }
 
     private fun image(context: Context, parent: LinearLayout, data: JsonObject) {
-        val url = imageUrl(data.string("url")) ?: run { addText(context, parent, label(context, R.string.artemis_template_media_unavailable)); return }
+        val url = imageUrl(data.string("url")) ?: run {
+            parent.addView(blockedMediaPlaceholder(context, data.readString("alt")))
+            return
+        }
         val templateImageView = (android.view.LayoutInflater.from(context).inflate(
             R.layout.artemis_template_image,
             parent,
             false
         ) as ImageView).apply {
             contentDescription = data.readString("alt") ?: data.readString("caption") ?: "Image"
+            background = cardBackground(context, context.artemisColor(theme, R.color.artemis_surface), 14, context.artemisColor(theme, R.color.artemis_border))
+            clipToOutline = true
         }
         loadImage(url) { decodedBitmap ->
             if (decodedBitmap != null) templateImageView.setImageBitmap(decodedBitmap)
             else { templateImageView.visibility = View.GONE; addText(context, parent, data.string("alt") ?: label(context, R.string.artemis_template_media_unavailable)) }
         }
-        parent.addView(
-            templateImageView,
-            LinearLayout.LayoutParams(-1, context.densityIndependentPixelsToPixels(190))
-        )
-        data.readString("caption")?.let { addText(context, parent, it) }
+        parent.addView(templateImageView, LinearLayout.LayoutParams(-1, -2))
+        data.readString("caption")?.let { caption ->
+            parent.addView(TextView(context).apply {
+                text = caption
+                textSize = 12f
+                setLineSpacing(0f, 1.5f)
+                setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
+                setPadding(0, context.densityIndependentPixelsToPixels(8), 0, 0)
+            })
+        }
     }
 
     private fun html(context: Context, parent: LinearLayout, source: String) {
@@ -450,40 +517,61 @@ internal class DefaultRichTemplateRenderer(
         parent: LinearLayout,
         data: JsonObject
     ) {
-        val url = navigationUrl(data.string("url")) ?: return
+        val url = navigationUrl(data.string("url")) ?: run { parent.addView(blockedMediaPlaceholder(context, data.string("alt"))); return }
         if (!safeUrl(url)) {
-            addText(context, parent, "Invalid video link"); return
+            parent.addView(blockedMediaPlaceholder(context, data.string("alt"))); return
         }
-        val videoPlayerView = VideoView(context).apply {
-            setOnPreparedListener { mediaPlayer -> mediaPlayer.isLooping = false }
-            setOnErrorListener { _, _, _ ->
-                addText(
-                    context,
-                    parent,
-                    "Video could not be played"
-                ); true
+        val videoPlayerView = VideoView(context)
+        val mediaFrame = object : android.widget.FrameLayout(context) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val width = View.MeasureSpec.getSize(widthMeasureSpec)
+                val height = context.densityIndependentPixelsToPixels(9) * width / context.densityIndependentPixelsToPixels(16)
+                super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
+            }
+        }.apply {
+            background = cardBackground(context, context.artemisColor(theme, R.color.artemis_surface), 14, context.artemisColor(theme, R.color.artemis_border))
+            clipToOutline = true
+        }
+        mediaFrame.addView(videoPlayerView, android.widget.FrameLayout.LayoutParams(-1, -1))
+        val poster = ImageView(context).apply {
+            contentDescription = data.string("alt") ?: data.string("caption")
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = cardBackground(context, context.artemisColor(theme, R.color.artemis_surface), 14, context.artemisColor(theme, R.color.artemis_border))
+            data.string("thumbnail_url")?.let(::imageUrl)?.let { source -> loadImage(source) { bitmap -> if (bitmap != null) setImageBitmap(bitmap) else visibility = View.GONE } }
+        }
+        mediaFrame.addView(poster, android.widget.FrameLayout.LayoutParams(-1, -1))
+        val playButton = TextView(context).apply {
+            text = "▶"
+            textSize = 18f
+            gravity = Gravity.CENTER
+            contentDescription = label(context, R.string.play_video)
+            setTextColor(color(theme.primaryForeground, android.graphics.Color.WHITE))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(color(theme.primary, context.artemisColor(theme, R.color.artemis_primary)))
+            }
+            setOnClickListener {
+                videoPlayerView.setVideoURI(url.toUri())
+                videoPlayerView.start()
             }
         }
-        val videoPlaybackButton = templateButton(context, parent).apply {
-            text = label(context, R.string.play_video)
-            setOnClickListener { videoPlayerView.setVideoURI(url.toUri()); videoPlayerView.start() }
-        }
-        val poster = smallImage(context, data.string("thumbnail_url"), 160, data.string("alt") ?: data.string("caption"))
-        val mediaFrame = android.widget.FrameLayout(context)
-        mediaFrame.addView(videoPlayerView, android.widget.FrameLayout.LayoutParams(-1, -1))
-        poster?.let { mediaFrame.addView(it, android.widget.FrameLayout.LayoutParams(-1, -1)) }
-        videoPlayerView.setOnPreparedListener { player -> player.isLooping = false; poster?.visibility = View.GONE }
+        mediaFrame.addView(playButton, android.widget.FrameLayout.LayoutParams(
+            context.densityIndependentPixelsToPixels(48), context.densityIndependentPixelsToPixels(48), Gravity.CENTER))
+        videoPlayerView.setOnPreparedListener { player -> player.isLooping = false; poster.visibility = View.GONE; playButton.visibility = View.GONE }
         videoPlayerView.setMediaController(android.widget.MediaController(context).apply { setAnchorView(videoPlayerView) })
         videoPlayerView.contentDescription = data.string("alt") ?: data.string("caption")
         val previousRelease = holder.onMediaReleased
-        holder.onMediaReleased = { previousRelease?.invoke(); poster?.visibility = View.VISIBLE }
+        holder.onMediaReleased = { previousRelease?.invoke(); poster.visibility = View.VISIBLE; playButton.visibility = View.VISIBLE }
         holder.videoViews.add(videoPlayerView)
-        parent.addView(
-            mediaFrame,
-            LinearLayout.LayoutParams(-1, context.densityIndependentPixelsToPixels(190))
-        )
-        parent.addView(videoPlaybackButton, createMatchParentWrapContentLayoutParams(context))
-        data.string("caption")?.let { addText(context, parent, it) }
+        parent.addView(mediaFrame, LinearLayout.LayoutParams(-1, -2))
+        data.string("caption")?.let { caption ->
+            parent.addView(TextView(context).apply {
+                text = caption
+                textSize = 12f
+                setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
+                setPadding(0, context.densityIndependentPixelsToPixels(8), 0, 0)
+            })
+        }
     }
 
     private fun audio(
@@ -492,8 +580,8 @@ internal class DefaultRichTemplateRenderer(
         parent: LinearLayout,
         data: JsonObject
     ) {
-        val url = navigationUrl(data.string("url")) ?: return
-        smallImage(context, data.string("thumbnail_url"), 56, data.string("alt"))?.let(parent::addView)
+        val url = navigationUrl(data.string("url")) ?: run { parent.addView(blockedMediaPlaceholder(context, data.string("alt"))); return }
+        if (!safeUrl(url)) { parent.addView(blockedMediaPlaceholder(context, data.string("alt"))); return }
         val button = templateButton(context, parent).apply {
             text = label(context, R.string.play_audio)
             contentDescription = data.string("alt") ?: data.string("caption") ?: text
@@ -529,74 +617,139 @@ internal class DefaultRichTemplateRenderer(
                 mediaPlayer.prepareAsync()
             }.onFailure { button.isEnabled = true; ownedPlayer = null; button.text = label(context, R.string.audio_unavailable) }
         }
-        parent.addView(
-            button,
-            createMatchParentWrapContentLayoutParams(context)
-        ); data.readString("caption")?.let { addText(context, parent, it) }
+        parent.addView(button, LinearLayout.LayoutParams(-1, -2))
+        data.readString("caption")?.let { caption ->
+            parent.addView(TextView(context).apply {
+                text = caption
+                textSize = 12f
+                setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
+                setPadding(0, context.densityIndependentPixelsToPixels(8), 0, 0)
+            })
+        }
     }
 
     private fun file(context: Context, parent: LinearLayout, data: JsonObject) {
         val fileName = data.readString("filename")?.takeIf(String::isNotBlank) ?: "File"
-        val fileRowLayout = LinearLayout(context).apply {
-            gravity = Gravity.CENTER_VERTICAL; orientation = LinearLayout.HORIZONTAL
+        val fileUrl = navigationUrl(data.string("url"))?.takeIf { safeUrl(it) }
+        val fileCard = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(context.densityIndependentPixelsToPixels(16), context.densityIndependentPixelsToPixels(14), context.densityIndependentPixelsToPixels(16), context.densityIndependentPixelsToPixels(14))
+            background = cardBackground(context,
+                androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_background), context.artemisColor(theme, R.color.artemis_surface), .1f),
+                14, context.artemisColor(theme, R.color.artemis_border))
         }
-        val fileType = AttachmentFileTypes.resolve(fileName, data.string("mime_type").orEmpty())
-        fileRowLayout.addView(ImageView(context).apply {
-            setImageResource(fileType.icon); imageTintList = android.content.res.ColorStateList.valueOf(context.getColor(fileType.color))
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }, LinearLayout.LayoutParams(context.densityIndependentPixelsToPixels(20), context.densityIndependentPixelsToPixels(20)).apply { marginEnd = context.densityIndependentPixelsToPixels(8) })
-        fileRowLayout.addView(TextView(context).apply {
-            text = fileName; textSize = 14f; maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; setTypeface(typeface, Typeface.BOLD)
-            setTextColor(context.artemisColor(theme, R.color.artemis_text))
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        val openFileButton = templateButton(context, fileRowLayout).apply {
-            text = label(context, R.string.open)
-            setOnClickListener { openUrl(context, data.readString("url").orEmpty()) }
+        val info = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        info.addView(TextView(context).apply {
+            text = fileName
+            textSize = 13f
+            maxLines = 2
+            breakStrategy = android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
+        })
+        data.readLong("size_bytes")?.takeIf { it >= 0 }?.let { size ->
+            info.addView(TextView(context).apply {
+                text = android.text.format.Formatter.formatShortFileSize(context, size)
+                textSize = 12f
+                setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
+                setPadding(0, context.densityIndependentPixelsToPixels(4), 0, 0)
+            })
         }
-        openFileButton.isEnabled = safeUrl(data.string("url").orEmpty())
-        data.string("mime_type")?.takeIf(String::isNotBlank)?.let { addText(context, parent, it) }
-        // A full-width button in this horizontal row leaves the filename at zero width,
-        // causing extreme text wrapping and a near-screen-height attachment card.
-        fileRowLayout.addView(
-            openFileButton,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-        parent.addView(fileRowLayout, createMatchParentWrapContentLayoutParams(context))
-        data.readLong("size_bytes")?.takeIf { it >= 0 }?.let {
-            addText(
-                context,
-                parent,
-                android.text.format.Formatter.formatShortFileSize(context, it)
-            )
+        fileCard.addView(info, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = context.densityIndependentPixelsToPixels(16) })
+        val download = templateButton(context, fileCard).apply {
+            text = label(context, R.string.artemis_template_download)
+            textSize = 12f
+            minWidth = context.densityIndependentPixelsToPixels(92)
+            isEnabled = fileUrl != null
+            if (this is com.google.android.material.button.MaterialButton) {
+                strokeWidth = 0
+                cornerRadius = context.densityIndependentPixelsToPixels(24)
+                backgroundTintList = android.content.res.ColorStateList.valueOf(
+                    androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_background), color(theme.primary, context.artemisColor(theme, R.color.artemis_primary)), .1f)
+                )
+            }
+            setOnClickListener { fileUrl?.let { openUrl(context, it) } }
         }
+        fileCard.addView(download)
+        parent.addView(fileCard, LinearLayout.LayoutParams(-1, -2))
     }
 
-    private fun renderList(context: Context, parent: LinearLayout, data: JsonObject) {
-        data.readString("title")?.let { addText(context, parent, it, bold = true) }
+    private fun renderList(context: Context, message: ChatMessage, parent: LinearLayout, data: JsonObject) {
+        data.readString("title")?.let { title ->
+            parent.addView(TextView(context).apply {
+                text = title
+                textSize = 13f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
+            }, LinearLayout.LayoutParams(-1, -2))
+        }
         if (data.readArray("items").size() > 100) addText(context, parent, label(context, R.string.artemis_template_item_limit, 100))
+        val renderId = data.string("actionRenderId", "renderId") ?: message.actions?.string("renderId")
+        val selectableRows = mutableListOf<View>()
         data.readArray("items").objects().take(100).forEach { item ->
             val title = item.readString("title")?.takeIf(String::isNotBlank) ?: return@forEach
             val listItemView = android.view.LayoutInflater.from(context)
                 .inflate(R.layout.artemis_template_list_item, parent, false)
-            listItemView.findViewById<TextView>(R.id.artemis_list_title).text = title
+            val actionId = item.readString("id")?.trim()?.takeIf(String::isNotEmpty)
+            val actionUrl = item.readString("default_action_url")?.let(::navigationUrl)?.takeIf { safeUrl(it) }
+            listItemView.findViewById<TextView>(R.id.artemis_list_title).apply {
+                text = title
+                setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
+            }
+            (listItemView.background?.mutate() as? android.graphics.drawable.GradientDrawable)?.let { background ->
+                background.cornerRadius = context.densityIndependentPixelsToPixels(14).toFloat()
+                background.setColor(androidx.core.graphics.ColorUtils.blendARGB(
+                    context.artemisColor(theme, R.color.artemis_background),
+                    context.artemisColor(theme, R.color.artemis_surface), .08f,
+                ))
+                background.setStroke(context.densityIndependentPixelsToPixels(1), context.artemisColor(theme, R.color.artemis_border))
+            }
             listItemView.findViewById<TextView>(R.id.artemis_list_subtitle).apply {
                 text = item.readString("subtitle")
+                setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
                 visibility = if (text.isNullOrBlank()) View.GONE else View.VISIBLE
             }
-            if (item.readString("default_action_url") != null) listItemView.setOnClickListener {
+            val image = listItemView.findViewById<ImageView>(R.id.artemis_list_image)
+            item.string("image_url")?.let(::imageUrl)?.let { url ->
+                image.visibility = View.VISIBLE
+                image.contentDescription = title
+                image.setImageDrawable(android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                    cornerRadius = context.densityIndependentPixelsToPixels(12).toFloat()
+                    setColor(context.artemisColor(theme, R.color.artemis_surface))
+                })
+                image.clipToOutline = true
+                image.scaleType = ImageView.ScaleType.CENTER_CROP
+                loadImage(url) { bitmap -> if (bitmap != null) image.setImageBitmap(bitmap) else image.visibility = View.GONE }
+            }
+            if (actionId != null) {
+                selectableRows += listItemView
+                listItemView.isEnabled = !callbacks.isTemplateLocked(message, actionId, renderId)
+                listItemView.alpha = if (listItemView.isEnabled) 1f else .5f
+                listItemView.setOnClickListener {
+                    if (!listItemView.isEnabled || callbacks.isTemplateLocked(message, actionId, renderId)) return@setOnClickListener
+                    listItemView.isEnabled = false
+                    listItemView.alpha = .5f
+                    (listItemView.background?.mutate() as? android.graphics.drawable.GradientDrawable)?.setStroke(
+                        context.densityIndependentPixelsToPixels(2), color(theme.primary, context.artemisColor(theme, R.color.artemis_primary)))
+                    callbacks.onAction(message, actionId, TemplateContracts.actionValue(item), null, renderId)
+                    selectableRows.forEach { row -> row.isEnabled = false; row.alpha = .5f }
+                }
+            } else if (actionUrl != null) listItemView.setOnClickListener {
                 openUrl(
                     context,
-                    item.readString("default_action_url").orEmpty()
+                    actionUrl
                 )
             }
-            val row = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
-            smallImage(context, item.string("image_url"), 48)?.let(row::addView)
-            row.addView(listItemView, LinearLayout.LayoutParams(0, -2, 1f))
-            if (item.string("default_action_url") != null) row.setOnClickListener { listItemView.performClick() }
-            parent.addView(row, createMatchParentWrapContentLayoutParams(context))
+            listItemView.foreground = android.util.TypedValue().let { value ->
+                if ((actionId != null || actionUrl != null) && context.theme.resolveAttribute(android.R.attr.selectableItemBackground, value, true))
+                    androidx.core.content.ContextCompat.getDrawable(context, value.resourceId) else null
+            }
+            val params = createMatchParentWrapContentLayoutParams(context) as LinearLayout.LayoutParams
+            params.topMargin = context.densityIndependentPixelsToPixels(10)
+            params.bottomMargin = 0
+            parent.addView(listItemView, params)
         }
     }
 
@@ -606,18 +759,49 @@ internal class DefaultRichTemplateRenderer(
             data.get("value")?.takeIf { jsonValue -> jsonValue.isJsonPrimitive }?.asString ?: return
         val card = android.view.LayoutInflater.from(context)
             .inflate(R.layout.artemis_template_kpi, parent, false)
-        card.findViewById<TextView>(R.id.artemis_kpi_label).text = label
+        card.background = cardBackground(context,
+            androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_background), color(theme.primary, context.artemisColor(theme, R.color.artemis_primary)), .08f),
+            16, androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_border), color(theme.primary, context.artemisColor(theme, R.color.artemis_primary)), .3f))
+        card.setPadding(context.densityIndependentPixelsToPixels(16))
+        card.findViewById<ImageView>(R.id.artemis_kpi_icon).let { icon ->
+            data.string("icon_url")?.let(::imageUrl)?.let { url ->
+                icon.visibility = View.VISIBLE
+                icon.background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                    cornerRadius = context.densityIndependentPixelsToPixels(8).toFloat()
+                }
+                icon.clipToOutline = true
+                loadImage(url) { bitmap -> if (bitmap != null) icon.setImageBitmap(bitmap) else icon.visibility = View.GONE }
+            }
+        }
+        card.findViewById<TextView>(R.id.artemis_kpi_label).apply {
+            text = label.uppercase(java.util.Locale.getDefault())
+            setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
+        }
         card.findViewById<TextView>(R.id.artemis_kpi_value).text =
             buildString {
                 append(metricValue)
                 append((data.readString("unit")?.let { unit -> " $unit" } ?: ""))
             }
         card.findViewById<TextView>(R.id.artemis_kpi_trend).apply {
-            text = when (data.string("trend")) { "up" -> "↑"; "down" -> "↓"; "flat" -> "→"; else -> data.string("trend").orEmpty() }
+            val trend = data.string("trend")
+            text = when (trend) { "up" -> "↑"; "down" -> "↓"; "flat" -> "→"; else -> "" }
             contentDescription = data.string("trend")?.let { label(context, R.string.artemis_template_trend, it) }
+            val trendColor = when (trend) {
+                "up" -> android.graphics.Color.rgb(21, 128, 61)
+                "down" -> android.graphics.Color.rgb(220, 38, 38)
+                else -> context.artemisColor(theme, R.color.artemis_muted)
+            }
+            setTextColor(trendColor)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                cornerRadius = context.densityIndependentPixelsToPixels(20).toFloat()
+                setColor(androidx.core.graphics.ColorUtils.setAlphaComponent(trendColor, 28))
+            }
+            setPadding(context.densityIndependentPixelsToPixels(8), context.densityIndependentPixelsToPixels(4), context.densityIndependentPixelsToPixels(8), context.densityIndependentPixelsToPixels(4))
+            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { topMargin = context.densityIndependentPixelsToPixels(6) }
             visibility = if (text.isNullOrBlank()) View.GONE else View.VISIBLE
         }
-        smallImage(context, data.string("icon_url"), 24)?.let(parent::addView)
         parent.addView(card)
     }
 
@@ -631,62 +815,85 @@ internal class DefaultRichTemplateRenderer(
         val tableScope = "table:${data.hashCode()}"
         val renderId = data.string("actionRenderId", "renderId") ?: message?.actions?.string("renderId")
         var showAllRows = message?.let { callbacks.templateDraft(it, renderId, tableScope, data)["expanded"] == "true" } ?: false
-        val tableContainer = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        val tableContainer = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = cardBackground(context, context.artemisColor(theme, R.color.artemis_background), 14, context.artemisColor(theme, R.color.artemis_border))
+            clipToOutline = true
+        }
         fun drawTableRows() {
             tableContainer.removeAllViews()
-            val tableHorizontalScrollView = HorizontalScrollView(context)
+            val tableHorizontalScrollView = HorizontalScrollView(context).apply {
+                isFillViewport = true
+                isHorizontalScrollBarEnabled = false
+            }
             val tableLayout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-            fun addTableRow(cellValues: List<String>, isHeaderRow: Boolean) {
+            fun addTableRow(cellValues: List<String>, isHeaderRow: Boolean, rowIndex: Int) {
                 val tableRowLayout =
-                    LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+                    LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        showDividers = SHOW_DIVIDER_MIDDLE
+                        setDividerDrawable(android.graphics.drawable.ColorDrawable(context.artemisColor(theme, R.color.artemis_border)))
+                        dividerPadding = 0
+                        setBackgroundColor(if (isHeaderRow) androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_surface), color(theme.primary, context.artemisColor(theme, R.color.artemis_primary)), .15f)
+                            else if (rowIndex % 2 == 1) androidx.core.graphics.ColorUtils.setAlphaComponent(context.artemisColor(theme, R.color.artemis_surface), 110) else context.artemisColor(theme, R.color.artemis_background))
+                    }
                 cellValues.forEachIndexed { columnIndex, cellValue ->
                     val tableCell = TextView(context).apply {
-                        text = if (data.flag("markdown_cells")) parseMarkdown(context, cellValue) else cellValue
+                        text = if (isHeaderRow) cellValue.uppercase(java.util.Locale.getDefault()) else if (data.flag("markdown_cells")) parseMarkdown(context, cellValue) else cellValue
                         movementMethod = if (data.flag("markdown_cells")) LinkMovementMethod.getInstance() else null
                         gravity = when (columns[columnIndex].string("align")) { "right" -> Gravity.RIGHT; "center" -> Gravity.CENTER; else -> Gravity.LEFT }
-                        textSize = 13f
-                        setTextColor(context.artemisColor(theme, R.color.artemis_text))
-                        setPadding(context.densityIndependentPixelsToPixels(12))
+                        textSize = if (isHeaderRow) 11f else 12f
+                        setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
+                        setPadding(context.densityIndependentPixelsToPixels(12), context.densityIndependentPixelsToPixels(10), context.densityIndependentPixelsToPixels(12), context.densityIndependentPixelsToPixels(10))
+                        minWidth = context.densityIndependentPixelsToPixels(64)
+                        breakStrategy = LineBreaker.BREAK_STRATEGY_HIGH_QUALITY
                         if (isHeaderRow) {
                             setTypeface(typeface, Typeface.BOLD)
-                            setBackgroundColor(context.artemisColor(theme, R.color.artemis_surface))
+                            letterSpacing = .04f
                         }
                     }
                     tableRowLayout.addView(
                         tableCell,
                         LinearLayout.LayoutParams(
-                            context.densityIndependentPixelsToPixels(120),
-                            ViewGroup.LayoutParams.WRAP_CONTENT
+                            0,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            1f,
                         )
                     )
                 }
-                tableLayout.addView(tableRowLayout)
+                tableLayout.addView(tableRowLayout, LinearLayout.LayoutParams(-1, -2))
             }
-            addTableRow(columns.map { column -> column.readString("header").orEmpty() }, true)
-            rows.take(if (showAllRows) 500 else maximumVisibleRows).forEach { rowData ->
+            addTableRow(columns.map { column -> column.readString("header").orEmpty() }, true, -1)
+            rows.take(if (showAllRows) 500 else maximumVisibleRows).forEachIndexed { rowIndex, rowData ->
                 addTableRow(columns.map { column ->
                     rowData.get(column.readString("key"))?.let(::scalar) ?: ""
-                }, false)
+                }, false, rowIndex)
             }
             tableHorizontalScrollView.addView(tableLayout)
             tableContainer.addView(tableHorizontalScrollView)
             if (rows.size > maximumVisibleRows) {
-                tableContainer.addView(templateButton(context, tableContainer).apply {
+                tableContainer.addView(TextView(context).apply {
                     text = if (showAllRows) label(context, R.string.artemis_show_less) else label(
                         context,
                         R.string.artemis_show_more
                     )
+                    textSize = 12f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(color(theme.primary, context.artemisColor(theme, R.color.artemis_primary)))
+                    isClickable = true
+                    isFocusable = true
+                    setPadding(0, context.densityIndependentPixelsToPixels(10), 0, context.densityIndependentPixelsToPixels(2))
                     setOnClickListener {
                         showAllRows = !showAllRows
                         message?.let { callbacks.onTemplateDraft(it, renderId, tableScope, data, mapOf("expanded" to showAllRows.toString())) }
                         drawTableRows()
                     }
-                })
+                }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = context.densityIndependentPixelsToPixels(12); rightMargin = context.densityIndependentPixelsToPixels(12) })
             }
         }
         drawTableRows()
         if ((data.array("rows")?.size() ?: 0) > 500) addText(context, parent, label(context, R.string.artemis_template_item_limit, 500))
-        parent.addView(tableContainer, createMatchParentWrapContentLayoutParams(context))
+        parent.addView(tableContainer, LinearLayout.LayoutParams(-1, -2))
     }
 
     private fun chart(context: Context, parent: LinearLayout, data: JsonObject) {
@@ -699,9 +906,17 @@ internal class DefaultRichTemplateRenderer(
             TemplateChartPoint(point.string("label").orEmpty(), number, point.string("color"))
         }.orEmpty()
         if (points.isEmpty()) { addText(context, parent, label(context, R.string.artemis_template_no_chart_data)); return }
-        data.string("title")?.let { addText(context, parent, it, bold = true) }
-        parent.addView(NativeTemplateChart(context, type, points, theme), LinearLayout.LayoutParams(-1, context.densityIndependentPixelsToPixels(180)))
-        addText(context, parent, points.joinToString(" · ") { "${it.label}: ${it.value}" })
+        data.string("title")?.let { title ->
+            parent.addView(TextView(context).apply {
+                text = title
+                textSize = 13f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
+            })
+        }
+        parent.addView(NativeTemplateChart(context, type, points, theme), LinearLayout.LayoutParams(-1, context.densityIndependentPixelsToPixels(180)).apply {
+            topMargin = context.densityIndependentPixelsToPixels(10)
+        })
     }
 
     private fun form(
@@ -720,7 +935,7 @@ internal class DefaultRichTemplateRenderer(
         if (!progressValue.isFinite() || maxValue <= 0 || !maxValue.isFinite()) {
             addText(context, parent, "Progress unavailable"); return
         }
-        data.readString("label")?.let { addText(context, parent, it) }
+        val progressLabel = data.readString("label") ?: label(context, R.string.artemis_template_progress_label)
         val progressBarLayoutResource =
             if (data.readString("variant") == "circle") R.layout.artemis_template_progress_circle
             else R.layout.artemis_template_progress
@@ -729,7 +944,7 @@ internal class DefaultRichTemplateRenderer(
         val completionPercentage = kotlin.math.floor((progressValue / maxValue).coerceIn(0.0, 1.0) * 100 + .5).toInt()
         if (progressBar is com.google.android.material.progressindicator.BaseProgressIndicator<*>) {
             progressBar.setIndicatorColor(context.artemisColor(theme, R.color.artemis_primary))
-            progressBar.trackColor = context.artemisColor(theme, R.color.artemis_border)
+            progressBar.trackColor = androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_surface), context.artemisColor(theme, R.color.artemis_border), .35f)
         }
         progressBar.max = 100
         progressBar.progress = completionPercentage
@@ -741,10 +956,46 @@ internal class DefaultRichTemplateRenderer(
                 )
             )
         )
-        progressBar.contentDescription =
-            "${data.readString("label") ?: "Progress"}: $completionPercentage%"
-        parent.addView(progressBar)
-        addText(context, parent, "$completionPercentage%")
+        progressBar.contentDescription = "$progressLabel: $completionPercentage%"
+        val percent = TextView(context).apply {
+            text = "$completionPercentage%"
+            textSize = 12f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
+        }
+        if (data.readString("variant") == "circle") {
+            val circle = android.widget.FrameLayout(context)
+            val params = android.widget.FrameLayout.LayoutParams(context.densityIndependentPixelsToPixels(92), context.densityIndependentPixelsToPixels(92), Gravity.CENTER)
+            circle.addView(progressBar, params)
+            circle.addView(TextView(context).apply {
+                text = "$completionPercentage%"
+                textSize = 14f
+                setTypeface(typeface, Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
+            }, android.widget.FrameLayout.LayoutParams(-1, -1))
+            parent.addView(circle, LinearLayout.LayoutParams(-1, context.densityIndependentPixelsToPixels(92)))
+            parent.addView(TextView(context).apply {
+                text = progressLabel
+                textSize = 12f
+                setTypeface(typeface, Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = context.densityIndependentPixelsToPixels(8) })
+        } else {
+            parent.addView(TextView(context).apply {
+                text = progressLabel
+                textSize = 12f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
+            })
+            parent.addView(progressBar, LinearLayout.LayoutParams(-1, context.densityIndependentPixelsToPixels(10)).apply {
+                topMargin = context.densityIndependentPixelsToPixels(8)
+            })
+            parent.addView(percent, LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = context.densityIndependentPixelsToPixels(8)
+            })
+        }
     }
 
     private fun feedback(
@@ -798,12 +1049,13 @@ internal class DefaultRichTemplateRenderer(
     ) {
         if (items.size() > 100) addText(context, parent, label(context, R.string.artemis_template_item_limit, 100))
         val quickReplyChipGroup = com.google.android.material.chip.ChipGroup(context)
+        quickReplyChipGroup.chipSpacingHorizontal = context.densityIndependentPixelsToPixels(8)
+        quickReplyChipGroup.chipSpacingVertical = context.densityIndependentPixelsToPixels(8)
+        quickReplyChipGroup.setPadding(0, 0, 0, 0)
         items.objects().take(100).forEach { item ->
             val quickReplyIdentifier = item.readString("id") ?: return@forEach
             val quickReplyLabel = item.readString("label") ?: return@forEach
             quickReplyChipGroup.addView(templateChip(context, parent).apply {
-                chipBackgroundColor = android.content.res.ColorStateList.valueOf(android.graphics.Color.TRANSPARENT)
-                chipStrokeColor = android.content.res.ColorStateList.valueOf(androidx.core.graphics.ColorUtils.setAlphaComponent(currentTextColor, 55))
                 text = quickReplyLabel
                 imageUrl(item.string("icon_url"))?.let { source -> loadImage(source) { bitmap -> if (bitmap != null) {
                     chipIcon = android.graphics.drawable.BitmapDrawable(context.resources, bitmap)
@@ -817,7 +1069,10 @@ internal class DefaultRichTemplateRenderer(
                 }
             })
         }
-        parent.addView(quickReplyChipGroup, createMatchParentWrapContentLayoutParams(context))
+        val quickReplyParams = createMatchParentWrapContentLayoutParams(context)
+        quickReplyParams.topMargin = 0
+        quickReplyParams.bottomMargin = 0
+        parent.addView(quickReplyChipGroup, quickReplyParams)
     }
 
     private fun fallback(
@@ -844,8 +1099,25 @@ internal class DefaultRichTemplateRenderer(
             }
         }
         collect(payload, 0, plain = payload.isJsonPrimitive)
-        addText(context, parent, title, bold = true)
-        addText(context, parent, parts.distinct().joinToString("\n").take(2000).ifBlank { label(context, R.string.artemis_template_channel_fallback) })
+        val item = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(context.densityIndependentPixelsToPixels(12), context.densityIndependentPixelsToPixels(10), context.densityIndependentPixelsToPixels(12), context.densityIndependentPixelsToPixels(10))
+            background = cardBackground(context, context.artemisColor(theme, R.color.artemis_surface), 10, context.artemisColor(theme, R.color.artemis_border))
+        }
+        item.addView(TextView(context).apply {
+            text = title
+            textSize = 12f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
+            setPadding(0, 0, 0, context.densityIndependentPixelsToPixels(4))
+        })
+        item.addView(TextView(context).apply {
+            text = parts.distinct().joinToString("\n").take(2000).ifBlank { label(context, R.string.artemis_template_channel_fallback) }
+            textSize = 11f
+            setLineSpacing(0f, 1.45f)
+            setTextColor(color(theme.mutedText, context.artemisColor(theme, R.color.artemis_muted)))
+        })
+        parent.addView(item, LinearLayout.LayoutParams(-1, -2))
     }
 
     private fun addText(
@@ -924,20 +1196,33 @@ internal class DefaultRichTemplateRenderer(
     private fun deepLink(context: Context, parent: LinearLayout, data: JsonObject) {
         val template = TemplateContracts.deepLink(data, handle?.config?.connection?.endpoint)
         template.text?.let { prompt ->
-            addText(context, parent, prompt, bold = true)
+            parent.addView(TextView(context).apply {
+                text = prompt
+                textSize = 14f
+                setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
+                setPadding(0, context.densityIndependentPixelsToPixels(4), 0, context.densityIndependentPixelsToPixels(4))
+            })
+        }
+        val group = com.google.android.material.chip.ChipGroup(context).apply {
+            chipSpacingHorizontal = context.densityIndependentPixelsToPixels(8)
+            chipSpacingVertical = context.densityIndependentPixelsToPixels(8)
         }
         template.elements.forEach { element ->
             val resolved = element.url
-            val button = templateButton(context, parent).apply {
+            val button = templateChip(context, group).apply {
                 text = element.title
+                isEnabled = true
                 setOnClickListener {
                     // ACTION_VIEW resolves application-registered app links first, then the platform handler.
                     // External links use the same validated platform URL mechanism.
                     if (element.navigation == TemplateContracts.DeepLinkNavigation.INTERNAL) openActionUrl(context, resolved) else openUrl(context, resolved)
                 }
             }
-            parent.addView(button, createMatchParentWrapContentLayoutParams(context))
+            group.addView(button)
         }
+        parent.addView(group, LinearLayout.LayoutParams(-1, -2).apply {
+            topMargin = context.densityIndependentPixelsToPixels(8)
+        })
     }
 
     private fun openUrl(context: Context, url: String) {
@@ -965,6 +1250,26 @@ internal class DefaultRichTemplateRenderer(
 
     private fun parseColor(colorValue: String?, fallbackColor: Int) =
         color(colorValue, fallbackColor)
+
+    private fun cardBackground(context: Context, fill: Int, radiusDp: Int, stroke: Int) =
+        android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = context.densityIndependentPixelsToPixels(radiusDp).toFloat()
+            setColor(fill)
+            setStroke(context.densityIndependentPixelsToPixels(1), stroke)
+        }
+
+    private fun blockedMediaPlaceholder(context: Context, description: String? = null) =
+        android.view.View(context).apply {
+            contentDescription = description
+            minimumHeight = context.densityIndependentPixelsToPixels(88)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                cornerRadius = context.densityIndependentPixelsToPixels(14).toFloat()
+                setColor(context.artemisColor(theme, R.color.artemis_surface))
+                setStroke(context.densityIndependentPixelsToPixels(1), context.artemisColor(theme, R.color.artemis_border), context.densityIndependentPixelsToPixels(6).toFloat(), context.densityIndependentPixelsToPixels(4).toFloat())
+            }
+        }
 
     private fun createMatchParentWrapContentLayoutParams(context: Context) =
         LinearLayout.LayoutParams(
@@ -1197,18 +1502,35 @@ internal class DefaultRichTemplateRenderer(
                 .append("</artemis-code-block></p>")
         }
         flushBlocks()
-        return html.toString()
+        // Marks each block end so parseMarkdown can add web-like paragraph spacing.
+        return html.toString().replace("</p>", "<artemis-gap></artemis-gap></p>")
     }
 
     fun parseMarkdown(context: Context, text: String): Spanned {
         markdownCache.get(text)?.let { return it }
         val accent = color(theme.primary, context.artemisColor(theme, R.color.artemis_primary))
-        return Html.fromHtml(
-            markdownHtml(text),
-            Html.FROM_HTML_MODE_COMPACT,
-            null,
-            MarkdownTagHandler(context, accent),
-        ).also { markdownCache.put(text, it) }
+        val tagHandler = MarkdownTagHandler(context, accent)
+        val spanned = android.text.SpannableStringBuilder(
+            Html.fromHtml(
+                markdownHtml(text),
+                Html.FROM_HTML_MODE_COMPACT,
+                null,
+                tagHandler,
+            )
+        )
+        // fromHtml ends every <p> with a newline; drop the trailing one so the last line has no blank gap below it.
+        var end = spanned.length
+        while (end > 0 && spanned[end - 1].isWhitespace()) end--
+        if (end < spanned.length) spanned.delete(end, spanned.length)
+        // Web renders a margin between blocks (heading → body, paragraph → paragraph); compact HTML has none.
+        val blockGap = context.densityIndependentPixelsToPixels(6)
+        tagHandler.blockEnds.forEach { blockEnd ->
+            val paragraphStart = blockEnd + 1
+            if (blockEnd >= spanned.length || spanned[blockEnd] != '\n' || paragraphStart >= spanned.length) return@forEach
+            val paragraphEnd = spanned.indexOf('\n', paragraphStart).let { if (it < 0) spanned.length else it + 1 }
+            spanned.setSpan(ParagraphTopSpacingSpan(blockGap), paragraphStart, paragraphEnd, Spanned.SPAN_PARAGRAPH)
+        }
+        return spanned.also { markdownCache.put(text, it) }
     }
 
     private fun markdownInline(source: String): String {
@@ -1269,22 +1591,29 @@ internal class DefaultRichTemplateRenderer(
             parent,
             false
         ) as com.google.android.material.chip.Chip).apply {
-            val accent = android.content.res.ColorStateList.valueOf(
-                color(
-                    theme.primary, context.artemisColor(
-                        theme,
-                        R.color.artemis_primary
-                    )
-                )
+            val primary = color(theme.primary, context.artemisColor(theme, R.color.artemis_primary))
+            setTextColor(primary)
+            chipBackgroundColor = android.content.res.ColorStateList.valueOf(
+                androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_background), primary, .08f)
             )
-            setTextColor(accent)
-            chipStrokeColor = accent
+            chipStrokeColor = android.content.res.ColorStateList.valueOf(
+                androidx.core.graphics.ColorUtils.setAlphaComponent(primary, (255 * .18f).toInt())
+            )
+            chipMinHeight = context.densityIndependentPixelsToPixels(34).toFloat()
+            setEnsureMinTouchTargetSize(false)
         }
 
     private fun templateButton(context: Context, parent: ViewGroup): Button =
         (android.view.LayoutInflater.from(context)
             .inflate(R.layout.artemis_template_action, parent, false) as Button).apply {
-            setTextColor(color(theme.primary, context.artemisColor(theme, R.color.artemis_primary)))
+            val primary = color(theme.primary, context.artemisColor(theme, R.color.artemis_primary))
+            setTextColor(primary)
+            if (this is com.google.android.material.button.MaterialButton) {
+                strokeColor = android.content.res.ColorStateList.valueOf(primary)
+                backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.TRANSPARENT)
+                cornerRadius = context.densityIndependentPixelsToPixels(18)
+                strokeWidth = context.densityIndependentPixelsToPixels(1)
+            }
         }
 
 }
