@@ -685,7 +685,6 @@ internal class DefaultRichTemplateRenderer(
             text = fileName
             textSize = 13f
             maxLines = 2
-            breakStrategy = android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
         })

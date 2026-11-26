@@ -162,9 +162,19 @@ internal class ChatMessageAdapter(
     override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
         super.onAttachedToRecyclerView(recyclerView)
         this.recyclerView = recyclerView
+        recyclerView.addOnLayoutChangeListener(widthChangeListener)
+    }
+
+    // Bubble widths are computed from the list width at bind time; re-bind when it changes (rotation, split screen,
+    // resizable windows) so rows never keep a stale, wider layout.
+    private val widthChangeListener = View.OnLayoutChangeListener { view, left, _, right, _, oldLeft, _, oldRight, _ ->
+        if (oldRight - oldLeft > 0 && right - left != oldRight - oldLeft) {
+            view.post { if (recyclerView === view && itemCount > 0) notifyItemRangeChanged(0, itemCount) }
+        }
     }
 
     override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        recyclerView.removeOnLayoutChangeListener(widthChangeListener)
         this.recyclerView = null
         templateCache.clear()
         templates.clearCaches()
