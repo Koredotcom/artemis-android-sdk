@@ -114,6 +114,12 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "Open in app: ${event.url}", Toast.LENGTH_SHORT).show()
                 }
             }
+
+            it.addListener { event ->
+                if (event is ArtemisUiEvent.Minimized) {
+                    Toast.makeText(this, "App has been minimized", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
         showChat(handle)
     }
