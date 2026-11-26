@@ -51,6 +51,8 @@ internal class ChatMessageAdapter(
         )
 
         fun isTemplateLocked(message: ChatMessage, actionIdentifier: String, renderId: String?): Boolean = isLocked(message, actionIdentifier)
+        /** A `deep_link` element with `navigation_type: internal` was tapped; the host app owns the route. */
+        fun onInternalDeepLink(message: ChatMessage, url: String, title: String) = Unit
         fun templateDraft(message: ChatMessage, renderId: String?, scope: String, signature: com.google.gson.JsonObject): Map<String, String> = emptyMap()
         fun onTemplateDraft(message: ChatMessage, renderId: String?, scope: String, signature: com.google.gson.JsonObject, values: Map<String, String>) = Unit
         fun feedbackState(

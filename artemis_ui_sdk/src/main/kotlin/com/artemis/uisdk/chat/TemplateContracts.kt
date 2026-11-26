@@ -13,15 +13,28 @@ internal object TemplateContracts {
         val elements = value.array("elements")?.mapNotNull { raw ->
             val item = raw.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
             val title = item.string("title")?.trim()?.takeIf(String::isNotEmpty) ?: return@mapNotNull null
+            if (item.string("navigation_type").equals("internal", true)) {
+                // Internal targets are host-app routes (for example "/TermsAndCondition"). The SDK never opens
+                // them; it hands the raw value to the host app, so only reject values no router should receive.
+                val route = internalRoute(item.string("url")) ?: return@mapNotNull null
+                return@mapNotNull DeepLinkElement(title, route, DeepLinkNavigation.INTERNAL)
+            }
             val url = actionUrl(item.string("url"), base) ?: return@mapNotNull null
-            // Deep links are HTTP(S) destinations; reject mailto/tel as navigation targets.
+            // External deep links are HTTP(S) destinations; reject mailto/tel as navigation targets.
             val parsed = runCatching { URI(url) }.getOrNull() ?: return@mapNotNull null
             if (parsed.scheme?.lowercase() !in setOf("http", "https")) return@mapNotNull null
-            DeepLinkElement(title, url, if (item.string("navigation_type").equals("internal", true)) DeepLinkNavigation.INTERNAL else DeepLinkNavigation.EXTERNAL)
+            DeepLinkElement(title, url, DeepLinkNavigation.EXTERNAL)
         }?.take(50).orEmpty()
         return DeepLinkTemplate(value.string("text")?.trim()?.takeIf(String::isNotEmpty), value.string("lang"), elements)
     }
 
+    private val blockedRouteSchemes = setOf("javascript", "data", "vbscript", "file")
+    fun internalRoute(value: String?): String? {
+        val route = value?.trim()?.takeIf { it.isNotEmpty() && it.length <= 2048 } ?: return null
+        if (route.any { it.isISOControl() }) return null
+        val scheme = route.substringBefore(':', "").takeIf { it.isNotEmpty() && ':' in route && it.none { c -> c == '/' || c == '?' || c == '#' } }
+        return route.takeIf { scheme?.lowercase() !in blockedRouteSchemes }
+    }
     fun actionValue(button: JsonObject): String? {
         val value = button.get("value") ?: button.get("payload")
         return if (value == null || value.isJsonNull) button.string("id") else if (value.isJsonPrimitive && value.asJsonPrimitive.isString) value.asString else value.toString()

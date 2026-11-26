@@ -15,6 +15,20 @@ class ChatProtocolTest {
         assertEquals(TemplateContracts.DeepLinkNavigation.EXTERNAL, template.elements[1].navigation)
     }
 
+    @Test fun deepLinkInternalKeepsRawHostRouteAndExternalStaysHttp() {
+        val payload = JsonParser.parseString("""{"text":"Terms and Conditions","lang":"en","elements":[{"title":"Internal Condition","url":"/TermsAndCondition","navigation_type":"internal"},{"title":"External Conditions","url":"https://www.kore.ai","navigation_type":"external"},{"title":"Relative external","url":"/terms","navigation_type":"external"},{"title":"Script","url":"javascript:alert(1)","navigation_type":"internal"},{"title":"App scheme","url":"myapp://terms","navigation_type":"internal"}]}""").asJsonObject
+        val template = TemplateContracts.deepLink(payload, base = "https://runtime.example.com")
+        assertEquals(
+            listOf(
+                TemplateContracts.DeepLinkElement("Internal Condition", "/TermsAndCondition", TemplateContracts.DeepLinkNavigation.INTERNAL),
+                TemplateContracts.DeepLinkElement("External Conditions", "https://www.kore.ai", TemplateContracts.DeepLinkNavigation.EXTERNAL),
+                TemplateContracts.DeepLinkElement("Relative external", "https://runtime.example.com/terms", TemplateContracts.DeepLinkNavigation.EXTERNAL),
+                TemplateContracts.DeepLinkElement("App scheme", "myapp://terms", TemplateContracts.DeepLinkNavigation.INTERNAL),
+            ),
+            template.elements,
+        )
+    }
+
     private fun frame(raw: String) = ChatFrameParser.parse(raw)!!
     private fun transcript(redacted: Boolean = false) = ChatTranscript().apply {
         apply(frame("""{"type":"session_start","sessionId":"s","capabilities":{"liveUserInputRedaction":$redacted}}"""))
