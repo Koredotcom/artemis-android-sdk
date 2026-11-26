@@ -14,6 +14,7 @@ import com.artemis.uisdk.ArtemisSessionConfig
 import com.artemis.uisdk.ArtemisThemeConfig
 import com.artemis.uisdk.ArtemisUI
 import com.artemis.uisdk.ArtemisUIConfig
+import com.artemis.uisdk.ArtemisUiEvent
 import com.artemis.uisdk.ArtemisUiHandle
 import com.artemis.uisdk.ChatOptions
 import com.google.gson.JsonParseException
@@ -107,6 +108,18 @@ class MainActivity : AppCompatActivity() {
         val handle = ArtemisUI.initialize(applicationContext, artemisUiConfiguration).also {
             artemisUiHandle = it
             CustomTemplateInjection.register(it)
+            // deep_link elements with navigation_type "internal" arrive here; the chat is already minimized.
+            it.addListener { event ->
+                if (event is ArtemisUiEvent.InternalDeepLink) {
+                    Toast.makeText(this, "Open in app: ${event.url}", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            it.addListener { event ->
+                if (event is ArtemisUiEvent.Minimized) {
+                    Toast.makeText(this, "App has been minimized", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
         showChat(handle)
     }

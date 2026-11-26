@@ -2,7 +2,7 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     style="@style/Widget.MaterialComponents.Chip.Action"
     android:layout_width="wrap_content" android:layout_height="wrap_content"
-    android:minHeight="0dp" android:textSize="13sp" android:textColor="@color/artemis_primary"
+    android:minHeight="0dp" android:textSize="14sp" android:textColor="@color/artemis_primary"
     app:chipBackgroundColor="@color/artemis_surface" app:chipStrokeColor="@color/artemis_primary"
-    app:chipStrokeWidth="1dp" app:chipCornerRadius="20dp" app:chipStartPadding="14dp"
-    app:chipEndPadding="14dp" app:chipMinHeight="34dp" app:ensureMinTouchTargetSize="false" />
+    app:chipStrokeWidth="1dp" app:chipSurfaceColor="@android:color/transparent" app:chipCornerRadius="20dp" app:chipStartPadding="15dp" app:textStartPadding="0dp"
+    app:chipEndPadding="15dp" app:textEndPadding="0dp" app:chipMinHeight="34dp" app:ensureMinTouchTargetSize="false" />

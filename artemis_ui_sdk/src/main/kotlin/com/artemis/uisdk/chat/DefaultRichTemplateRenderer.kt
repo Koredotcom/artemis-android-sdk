@@ -236,7 +236,7 @@ internal class DefaultRichTemplateRenderer(
                     )
 
                     "image" -> image(context, templateContainer, templatePayload.asJsonObject)
-                    "deep_link" -> deepLink(context, templateContainer, templatePayload.asJsonObject)
+                    "deep_link" -> deepLink(context, message, templateContainer, templatePayload.asJsonObject)
                     "html" -> html(context, templateContainer, templatePayload.asString)
                     "adaptive_card" -> {
                         val card = AdaptiveCardContracts.parse(templatePayload)
@@ -685,7 +685,6 @@ internal class DefaultRichTemplateRenderer(
             text = fileName
             textSize = 13f
             maxLines = 2
-            breakStrategy = android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
         })
@@ -1236,36 +1235,56 @@ internal class DefaultRichTemplateRenderer(
         }
     }
 
-    private fun deepLink(context: Context, parent: LinearLayout, data: JsonObject) {
+    private fun deepLink(context: Context, message: ChatMessage, parent: LinearLayout, data: JsonObject) {
         val template = TemplateContracts.deepLink(data, handle?.config?.connection?.endpoint)
-        template.text?.let { prompt ->
-            parent.addView(TextView(context).apply {
-                text = prompt
+        if (template.text == null && template.elements.isEmpty()) return
+        fun dp(value: Int) = context.densityIndependentPixelsToPixels(value)
+        val surface = context.artemisColor(theme, R.color.artemis_background)
+        val border = context.artemisColor(theme, R.color.artemis_border)
+        val primary = color(theme.primary, context.artemisColor(theme, R.color.artemis_primary))
+        // Web parity: a bordered white card with a bold title and full-width outlined link rows.
+        val card = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = cardBackground(context, surface, 16, border)
+            setPadding(dp(12), dp(14), dp(12), dp(12))
+        }
+        template.text?.let { title ->
+            card.addView(TextView(context).apply {
+                text = title
                 textSize = 14f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 setTextColor(color(theme.text, context.artemisColor(theme, R.color.artemis_text)))
-                setPadding(0, context.densityIndependentPixelsToPixels(4), 0, context.densityIndependentPixelsToPixels(4))
+                setPadding(dp(4), 0, dp(4), 0)
             })
         }
-        val group = com.google.android.material.chip.ChipGroup(context).apply {
-            chipSpacingHorizontal = context.densityIndependentPixelsToPixels(8)
-            chipSpacingVertical = context.densityIndependentPixelsToPixels(8)
-        }
-        template.elements.forEach { element ->
+        template.elements.forEachIndexed { index, element ->
             val resolved = element.url
-            val button = templateChip(context, group).apply {
+            card.addView(TextView(context).apply {
                 text = element.title
-                isEnabled = true
+                textSize = 14f
+                gravity = Gravity.CENTER
+                setTextColor(primary)
+                typeface = Typeface.DEFAULT
+                minHeight = dp(44)
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                background = android.graphics.drawable.RippleDrawable(
+                    android.content.res.ColorStateList.valueOf(androidx.core.graphics.ColorUtils.setAlphaComponent(primary, 0x1F)),
+                    cardBackground(context, surface, 12, border),
+                    null,
+                )
+                isClickable = true
+                isFocusable = true
+                contentDescription = element.title
                 setOnClickListener {
-                    // ACTION_VIEW resolves application-registered app links first, then the platform handler.
-                    // External links use the same validated platform URL mechanism.
-                    if (element.navigation == TemplateContracts.DeepLinkNavigation.INTERNAL) openActionUrl(context, resolved) else openUrl(context, resolved)
+                    // Internal: hand the raw route to the host app (the chat minimizes). External: system browser.
+                    if (element.navigation == TemplateContracts.DeepLinkNavigation.INTERNAL) callbacks.onInternalDeepLink(message, resolved, element.title)
+                    else openUrl(context, resolved)
                 }
-            }
-            group.addView(button)
+            }, LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(if (index == 0 && template.text == null) 0 else if (index == 0) 12 else 10)
+            })
         }
-        parent.addView(group, LinearLayout.LayoutParams(-1, -2).apply {
-            topMargin = context.densityIndependentPixelsToPixels(8)
-        })
+        parent.addView(card, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
     }
 
     private fun openUrl(context: Context, url: String) {
@@ -1638,11 +1657,12 @@ internal class DefaultRichTemplateRenderer(
         ) as com.google.android.material.chip.Chip).apply {
             val primary = color(theme.primary, context.artemisColor(theme, R.color.artemis_primary))
             setTextColor(primary)
+            // Web parity: a translucent primary tint, so the bubble colour shows through the chip.
             chipBackgroundColor = android.content.res.ColorStateList.valueOf(
-                androidx.core.graphics.ColorUtils.blendARGB(context.artemisColor(theme, R.color.artemis_background), primary, .08f)
+                androidx.core.graphics.ColorUtils.setAlphaComponent(primary, (255 * .08f).toInt())
             )
             chipStrokeColor = android.content.res.ColorStateList.valueOf(
-                androidx.core.graphics.ColorUtils.setAlphaComponent(primary, (255 * .18f).toInt())
+                androidx.core.graphics.ColorUtils.setAlphaComponent(primary, (255 * .2f).toInt())
             )
             chipMinHeight = context.densityIndependentPixelsToPixels(34).toFloat()
             setEnsureMinTouchTargetSize(false)

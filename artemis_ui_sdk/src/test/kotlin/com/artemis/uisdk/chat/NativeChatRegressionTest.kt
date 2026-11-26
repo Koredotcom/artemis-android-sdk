@@ -18,6 +18,11 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28])
 class NativeChatRegressionTest {
     private val context get() = android.view.ContextThemeWrapper(RuntimeEnvironment.getApplication(), R.style.Theme_ArtemisUI)
+    /** Template rows wrap controls in chip groups and nested columns; find views anywhere below [root]. */
+    private fun descendants(root: android.view.View): Sequence<android.view.View> = sequence {
+        yield(root)
+        if (root is android.view.ViewGroup) for (i in 0 until root.childCount) yieldAll(descendants(root.getChildAt(i)))
+    }
     private fun handle() = ArtemisUI.initialize(context, ArtemisUIConfig(ArtemisConnectionConfig(
         "https://runtime.example.com", "project", "pk", channelName = "mobile")))
     @Test fun minimizeRetainsConversationAndHandleCloseReleasesIt() {
@@ -41,7 +46,7 @@ class NativeChatRegressionTest {
         val renderer=DefaultRichTemplateRenderer(ArtemisFeatureConfig(),ArtemisThemeConfig(),callbacks)
         val message=ChatMessage("a", "a", MessageRole.ASSISTANT, "")
         renderer.renderActions(context,message,parent,JsonParser.parseString("""{"elements":[{"type":"button","id":"link","label":"Open","url":"https://example.com"}]}""").asJsonObject)
-        (parent.getChildAt(0) as Button).performClick()
+        descendants(parent).filterIsInstance<Button>().single { it.text.toString() == "Open" }.performClick()
         assertEquals(0,callbacks.actions)
         val intent=shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
         assertEquals(Intent.ACTION_VIEW,intent.action);assertEquals("https://example.com",intent.dataString)
@@ -64,10 +69,8 @@ class NativeChatRegressionTest {
         val width=(300*context.resources.displayMetrics.density).toInt()
         parent.measure(android.view.View.MeasureSpec.makeMeasureSpec(width,android.view.View.MeasureSpec.EXACTLY),
             android.view.View.MeasureSpec.makeMeasureSpec(0,android.view.View.MeasureSpec.UNSPECIFIED))
-        val card=parent.getChildAt(0) as LinearLayout
-        val row=card.getChildAt(0) as LinearLayout
-        val filename = (0 until row.childCount).map(row::getChildAt).filterIsInstance<android.widget.TextView>()
-            .single { it.text.toString() == "TravelDesk-dev-ticket.pdf" }
+        val filename = descendants(parent).filterIsInstance<android.widget.TextView>()
+            .single { it !is Button && it.text.toString() == "TravelDesk-dev-ticket.pdf" }
         assertTrue("Filename must have width next to Open", filename.measuredWidth > width/3)
         assertTrue("File card must remain compact", parent.measuredHeight < 180*context.resources.displayMetrics.density)
         renderer.clearCaches()

@@ -214,6 +214,7 @@ class ArtemisChatFragment : Fragment() {
                         artemisChatViewModel.submitFeedback(serverMessageId, feedbackType, rating, feedbackText)
                     }
                 }
+                override fun onInternalDeepLink(message: ChatMessage, url: String, title: String) = openInternalDeepLink(message, url, title)
                 override fun isTemplateLocked(message: ChatMessage, actionIdentifier: String, renderId: String?) = artemisChatViewModel.isTemplateActionLocked(message.messageId, actionIdentifier, renderId)
                 override fun templateDraft(message: ChatMessage, renderId: String?, scope: String, signature: com.google.gson.JsonObject) = artemisChatViewModel.templateDraft(message, renderId, scope, signature)
                 override fun onTemplateDraft(message: ChatMessage, renderId: String?, scope: String, signature: com.google.gson.JsonObject, values: Map<String, String>) = artemisChatViewModel.updateTemplateDraft(message, renderId, scope, signature, values)
@@ -607,6 +608,15 @@ class ArtemisChatFragment : Fragment() {
             .create()
             .also { it.setOnDismissListener { closePromptDialog = null } }
         closePromptDialog?.show()
+    }
+
+    private fun openInternalDeepLink(message: ChatMessage, url: String, title: String) {
+        if (wasMinimized || artemisUiHandle.isClosed()) return
+        // Minimize (not close) so the session survives while the host app shows its own screen.
+        wasMinimized = true
+        artemisUiHandle.minimizeChat()
+        dismissChat()
+        artemisUiHandle.emit(ArtemisUiEvent.InternalDeepLink(url, title, message.serverMessageId ?: message.messageId))
     }
 
     private fun dismissChat() {

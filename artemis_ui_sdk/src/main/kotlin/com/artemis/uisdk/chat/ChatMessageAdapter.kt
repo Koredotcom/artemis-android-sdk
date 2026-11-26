@@ -51,6 +51,8 @@ internal class ChatMessageAdapter(
         )
 
         fun isTemplateLocked(message: ChatMessage, actionIdentifier: String, renderId: String?): Boolean = isLocked(message, actionIdentifier)
+        /** A `deep_link` element with `navigation_type: internal` was tapped; the host app owns the route. */
+        fun onInternalDeepLink(message: ChatMessage, url: String, title: String) = Unit
         fun templateDraft(message: ChatMessage, renderId: String?, scope: String, signature: com.google.gson.JsonObject): Map<String, String> = emptyMap()
         fun onTemplateDraft(message: ChatMessage, renderId: String?, scope: String, signature: com.google.gson.JsonObject, values: Map<String, String>) = Unit
         fun feedbackState(
@@ -160,9 +162,19 @@ internal class ChatMessageAdapter(
     override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
         super.onAttachedToRecyclerView(recyclerView)
         this.recyclerView = recyclerView
+        recyclerView.addOnLayoutChangeListener(widthChangeListener)
+    }
+
+    // Bubble widths are computed from the list width at bind time; re-bind when it changes (rotation, split screen,
+    // resizable windows) so rows never keep a stale, wider layout.
+    private val widthChangeListener = View.OnLayoutChangeListener { view, left, _, right, _, oldLeft, _, oldRight, _ ->
+        if (oldRight - oldLeft > 0 && right - left != oldRight - oldLeft) {
+            view.post { if (recyclerView === view && itemCount > 0) notifyItemRangeChanged(0, itemCount) }
+        }
     }
 
     override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        recyclerView.removeOnLayoutChangeListener(widthChangeListener)
         this.recyclerView = null
         templateCache.clear()
         templates.clearCaches()

@@ -484,5 +484,11 @@ sealed interface ArtemisUiEvent {
     data class ContactCenterError(val message: String, val recoverable: Boolean = true) : ArtemisUiEvent
     data class ResponseCancelled(val messageId: String?, val reason: String) : ArtemisUiEvent
     object Minimized : ArtemisUiEvent
+    /**
+     * The user tapped a `deep_link` element whose `navigation_type` is `internal`. [url] is the raw value
+     * from the payload (for example `/TermsAndCondition`); route it inside the host app. The chat is
+     * minimized right before this event, so the session stays alive and can be reopened.
+     */
+    data class InternalDeepLink(val url: String, val title: String, val messageId: String) : ArtemisUiEvent
     data class Closed(val reason: String) : ArtemisUiEvent
 }

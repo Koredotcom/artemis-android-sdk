@@ -239,6 +239,21 @@ registration.close()
 
 Return an unattached view. Returning null, throwing, or returning an already attached view falls back to built-in rendering, then canonical fallback text. `request.payload` and message JSON are detached copies. Renderers must not send requests while rendering; submit actions from user interaction. Actions go through existing connection validation and action locks. The request exposes custom form draft values/change/submit callbacks, feedback draft/submission state and callbacks, locked action state, and the active typography config. Custom templates can load images through `request.loadImage(url)`, which uses the SDK's bounded image loader and URL checks, and open links through `request.openUrl(url)`, which uses the SDK navigation policy. Form drafts use the SDK's bounded per-session draft cache. The SDK reuses views during scrolling and normal status/progress updates. Renderer registration and actual presentation changes invalidate affected presentation caches. Host renderers own their own view state and media/resource lifecycle and should use attach/detach listeners where needed.
 
+## Deep links
+
+The built-in `deep_link` template renders a bordered card with the payload `text` as its title and each element as a full-width link row, and acts on each element's `navigation_type`:
+
+- `external`: the `url` (absolute http(s), or relative to the connection endpoint) opens in the system browser.
+- `internal`: the SDK minimizes the chat (the session stays alive) and emits `ArtemisUiEvent.InternalDeepLink(url, title, messageId)` with the raw `url` from the payload, for example `/TermsAndCondition`. The SDK does not open it; route it to your own screen and call `showChat()` to bring the chat back.
+
+```kotlin
+handle.addListener { event ->
+    if (event is ArtemisUiEvent.InternalDeepLink) router.open(event.url)
+}
+```
+
+Internal values with `javascript:`, `data:`, `vbscript:` or `file:` schemes, control characters, or more than 2048 characters are dropped.
+
 ## Native host APIs
 
 All commands below run on the main thread and require an open handle. A chat must be opened before connecting; commands do not implicitly create sessions or queue work before a session exists.
